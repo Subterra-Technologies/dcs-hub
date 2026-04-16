@@ -2,71 +2,90 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
 
-from . import db, tokens, wg
+from . import allocator, db, tokens, wg
 
 DB_PATH = Path(os.environ.get("SUBTERRA_DB", "/var/lib/subterra-hub/state.db"))
-WG_CONF_TEMPLATE = Path(__file__).parent.parent / "config" / "wg0.conf.template"
-WG_CONF = Path(os.environ.get("SUBTERRA_WG_CONF", "/etc/wireguard/wg0.conf"))
-WG_PRIVKEY = Path(os.environ.get("SUBTERRA_HUB_PRIVKEY", "/etc/wireguard/hub.key"))
-WG_PUBKEY = Path(os.environ.get("SUBTERRA_HUB_PUBKEY", "/etc/wireguard/hub.pubkey"))
 
 app = typer.Typer(help="subterra-wg-hub admin CLI", no_args_is_help=True)
 
 
-@app.command("bootstrap")
-def bootstrap() -> None:
-    """Generate hub keypair and write initial wg0.conf from template."""
+@app.command("init")
+def init() -> None:
+    """Initialize the coordinator DB. Safe to re-run."""
     db.initialize(DB_PATH)
-    if not WG_PRIVKEY.exists():
-        priv = subprocess.run(
-            ["wg", "genkey"], capture_output=True, text=True, check=True
-        ).stdout.strip()
-        WG_PRIVKEY.write_text(priv + "\n")
-        os.chmod(WG_PRIVKEY, 0o600)
-        pub = subprocess.run(
-            ["wg", "pubkey"], input=priv, capture_output=True, text=True, check=True
-        ).stdout.strip()
-        WG_PUBKEY.write_text(pub + "\n")
-        os.chmod(WG_PUBKEY, 0o644)
-        typer.echo(f"generated hub keypair -> {WG_PRIVKEY}, {WG_PUBKEY}")
-    if not WG_CONF.exists():
-        priv = WG_PRIVKEY.read_text().strip()
-        conf = WG_CONF_TEMPLATE.read_text().replace("__HUB_PRIVKEY__", priv)
-        WG_CONF.write_text(conf)
-        os.chmod(WG_CONF, 0o600)
-        typer.echo(f"wrote {WG_CONF}")
-    typer.echo("bootstrap complete")
+    typer.echo(f"db ready at {DB_PATH}")
 
 
-@app.command("add-school")
-def add_school(slug: str, display_name: str, contact_email: str = "") -> None:
+@app.command("add-district")
+def add_district(slug: str, display_name: str, contact_email: str = "") -> None:
     conn = db.connect(DB_PATH)
     try:
         with db.transaction(conn):
+            subnet = allocator.allocate_district_tunnel(conn)
             conn.execute(
-                "INSERT INTO schools (slug, display_name, contact_email) VALUES (?, ?, ?)",
-                (slug, display_name, contact_email or None),
+                "INSERT INTO districts (slug, display_name, contact_email, tunnel_subnet) "
+                "VALUES (?, ?, ?, ?)",
+                (slug, display_name, contact_email or None, subnet),
             )
-        typer.echo(f"added school {slug}")
+        typer.echo(f"district {slug}: tunnel /29 = {subnet}")
+    finally:
+        conn.close()
+
+
+@app.command("register-zabbix")
+def register_zabbix(
+    district_slug: str,
+    zabbix_hostname: str,
+    pubkey: str,
+    public_endpoint: str,
+    listen_port: int = 51820,
+) -> None:
+    """Record a Zabbix VM for a district. public_endpoint is what the Pi dials
+    (e.g. district-a.hub.yourdomain.com:51821)."""
+    conn = db.connect(DB_PATH)
+    try:
+        district = conn.execute(
+            "SELECT id FROM districts WHERE slug = ?", (district_slug,)
+        ).fetchone()
+        if district is None:
+            raise typer.BadParameter(f"no district '{district_slug}'")
+        with db.transaction(conn):
+            tunnel_ip = allocator.allocate_zabbix_tunnel_ip(conn, district["id"])
+            conn.execute(
+                "INSERT INTO zabbix_vms "
+                "(district_id, hostname, pubkey, tunnel_ip, public_endpoint, listen_port) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    district["id"],
+                    zabbix_hostname,
+                    pubkey,
+                    tunnel_ip,
+                    public_endpoint,
+                    listen_port,
+                ),
+            )
+        typer.echo(
+            f"registered {zabbix_hostname} in {district_slug}: "
+            f"tunnel {tunnel_ip}, dial-in {public_endpoint}"
+        )
     finally:
         conn.close()
 
 
 @app.command("issue-token")
-def issue_token(school_slug: str, valid_days: int = 14) -> None:
+def issue_token(district_slug: str, valid_days: int = 14) -> None:
     conn = db.connect(DB_PATH)
     try:
-        school = conn.execute(
-            "SELECT id FROM schools WHERE slug = ?", (school_slug,)
+        district = conn.execute(
+            "SELECT id FROM districts WHERE slug = ?", (district_slug,)
         ).fetchone()
-        if school is None:
-            raise typer.BadParameter(f"no school with slug '{school_slug}'")
+        if district is None:
+            raise typer.BadParameter(f"no district '{district_slug}'")
         raw = tokens.generate()
         token_hash = tokens.hash_token(raw)
         expires = (datetime.now(timezone.utc) + timedelta(days=valid_days)).strftime(
@@ -74,9 +93,9 @@ def issue_token(school_slug: str, valid_days: int = 14) -> None:
         )
         with db.transaction(conn):
             conn.execute(
-                "INSERT INTO enroll_tokens (token_hash, school_id, expires_at) "
+                "INSERT INTO enroll_tokens (token_hash, district_id, expires_at) "
                 "VALUES (?, ?, ?)",
-                (token_hash, school["id"], expires),
+                (token_hash, district["id"], expires),
             )
         typer.echo(raw)
     finally:
@@ -88,19 +107,18 @@ def list_pending() -> None:
     conn = db.connect(DB_PATH)
     try:
         rows = conn.execute(
-            "SELECT p.id, p.hostname, p.serial, p.tunnel_ip, p.virtual_subnet, "
-            "       p.enrolled_at, s.slug AS school "
-            "FROM peers p JOIN schools s ON s.id = p.school_id "
+            "SELECT p.id, p.hostname, p.serial, p.tunnel_ip, p.enrolled_at, "
+            "       d.slug AS district "
+            "FROM pis p JOIN districts d ON d.id = p.district_id "
             "WHERE p.status = 'pending' ORDER BY p.enrolled_at"
         ).fetchall()
         if not rows:
-            typer.echo("no pending peers")
+            typer.echo("no pending Pis")
             return
         for r in rows:
             typer.echo(
-                f"{r['id']:>4}  {r['school']:<20}  {r['hostname']:<24}  "
-                f"{r['serial']:<16}  {r['tunnel_ip']:<18}  {r['virtual_subnet']:<18}  "
-                f"{r['enrolled_at']}"
+                f"{r['id']:>4}  {r['district']:<20}  {r['hostname']:<24}  "
+                f"{r['serial']:<20}  {r['tunnel_ip']:<18}  {r['enrolled_at']}"
             )
     finally:
         conn.close()
@@ -112,21 +130,24 @@ def approve(serial: str) -> None:
     try:
         with db.transaction(conn):
             row = conn.execute(
-                "SELECT id, status FROM peers WHERE serial = ?", (serial,)
+                "SELECT id, status FROM pis WHERE serial = ?", (serial,)
             ).fetchone()
             if row is None:
-                raise typer.BadParameter(f"no peer with serial '{serial}'")
+                raise typer.BadParameter(f"no Pi with serial '{serial}'")
             if row["status"] != "pending":
                 raise typer.BadParameter(
-                    f"peer is '{row['status']}', only 'pending' can be approved"
+                    f"Pi is '{row['status']}', only 'pending' can be approved"
                 )
             conn.execute(
-                "UPDATE peers SET status = 'active', approved_at = datetime('now') "
+                "UPDATE pis SET status = 'active', approved_at = datetime('now') "
                 "WHERE id = ?",
                 (row["id"],),
             )
-        wg.apply(conn)
         typer.echo(f"approved {serial}")
+        typer.echo(
+            "Next: re-apply WG config on each Zabbix VM in this district "
+            "(subterra-hub show-zabbix-config <hostname>)."
+        )
     finally:
         conn.close()
 
@@ -137,53 +158,84 @@ def revoke(serial: str) -> None:
     try:
         with db.transaction(conn):
             row = conn.execute(
-                "SELECT id FROM peers WHERE serial = ?", (serial,)
+                "SELECT id FROM pis WHERE serial = ?", (serial,)
             ).fetchone()
             if row is None:
-                raise typer.BadParameter(f"no peer with serial '{serial}'")
+                raise typer.BadParameter(f"no Pi with serial '{serial}'")
             conn.execute(
-                "UPDATE peers SET status = 'revoked', revoked_at = datetime('now') "
+                "UPDATE pis SET status = 'revoked', revoked_at = datetime('now') "
                 "WHERE id = ?",
                 (row["id"],),
             )
-        wg.apply(conn)
         typer.echo(f"revoked {serial}")
     finally:
         conn.close()
 
 
-@app.command("handshakes")
-def handshakes() -> None:
+@app.command("show-pi-config")
+def show_pi_config(serial: str) -> None:
+    """Print wg0.conf the Pi should have (PrivateKey is a placeholder)."""
     conn = db.connect(DB_PATH)
     try:
-        hs = wg.last_handshakes()
-        rows = conn.execute(
-            "SELECT hostname, pubkey, status FROM peers WHERE status = 'active' "
-            "ORDER BY hostname"
+        pi = conn.execute(
+            "SELECT p.hostname, p.tunnel_ip, p.district_id FROM pis p "
+            "WHERE p.serial = ?",
+            (serial,),
+        ).fetchone()
+        if pi is None:
+            raise typer.BadParameter(f"no Pi with serial '{serial}'")
+        zabbixes = conn.execute(
+            "SELECT pubkey, public_endpoint, tunnel_ip FROM zabbix_vms "
+            "WHERE district_id = ? ORDER BY id",
+            (pi["district_id"],),
         ).fetchall()
-        now = int(datetime.now(timezone.utc).timestamp())
-        for r in rows:
-            last = hs.get(r["pubkey"], 0)
-            age = "never" if last == 0 else f"{now - last}s ago"
-            typer.echo(f"{r['hostname']:<24}  {age}")
+        peers = [
+            {
+                "pubkey": z["pubkey"],
+                "endpoint": z["public_endpoint"],
+                "tunnel_ip": z["tunnel_ip"].split("/")[0] + "/32",
+            }
+            for z in zabbixes
+        ]
+        typer.echo(wg.render_pi_config(
+            pi_privkey_placeholder="<PI_PRIVATE_KEY>",
+            pi_tunnel_ip=pi["tunnel_ip"],
+            peers=peers,
+        ))
     finally:
         conn.close()
 
 
-@app.command("dump-conf")
-def dump_conf() -> None:
-    """Render wg0.conf from the DB without applying (debugging)."""
+@app.command("show-zabbix-config")
+def show_zabbix_config(hostname: str) -> None:
+    """Print the wg0.conf a Zabbix VM should run. PrivateKey placeholder."""
+    conn = db.connect(DB_PATH)
+    try:
+        zv = conn.execute(
+            "SELECT id FROM zabbix_vms WHERE hostname = ?", (hostname,)
+        ).fetchone()
+        if zv is None:
+            raise typer.BadParameter(f"no zabbix VM '{hostname}'")
+        typer.echo(wg.render_zabbix_config(conn, zv["id"], "<ZABBIX_PRIVATE_KEY>"))
+    finally:
+        conn.close()
+
+
+@app.command("list-districts")
+def list_districts() -> None:
     conn = db.connect(DB_PATH)
     try:
         rows = conn.execute(
-            "SELECT hostname, pubkey, tunnel_ip, virtual_subnet "
-            "FROM peers WHERE status = 'active' ORDER BY id"
+            "SELECT d.slug, d.display_name, d.tunnel_subnet, "
+            "       (SELECT COUNT(*) FROM zabbix_vms WHERE district_id=d.id) AS n_zabbix, "
+            "       (SELECT COUNT(*) FROM pis WHERE district_id=d.id AND status='active') AS n_pis "
+            "FROM districts d ORDER BY d.slug"
         ).fetchall()
         for r in rows:
             typer.echo(
-                wg.render_peer_block(
-                    r["hostname"], r["pubkey"], r["tunnel_ip"], r["virtual_subnet"]
-                )
+                f"{r['slug']:<20}  {r['tunnel_subnet']:<18}  "
+                f"zabbix={r['n_zabbix']}  active-pis={r['n_pis']}  "
+                f"{r['display_name']}"
             )
     finally:
         conn.close()

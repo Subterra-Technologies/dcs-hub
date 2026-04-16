@@ -4,82 +4,51 @@ import ipaddress
 import sqlite3
 
 TUNNEL_OVERLAY = ipaddress.ip_network("10.200.0.0/16")
-TUNNEL_HUB_IP = ipaddress.IPv4Address("10.200.0.1")
-TUNNEL_FIRST_PEER = ipaddress.IPv4Address("10.200.0.2")
-TUNNEL_LAST_PEER = ipaddress.IPv4Address("10.200.255.254")
-
-VIRTUAL_SECOND_OCTET_START = 100
-VIRTUAL_SECOND_OCTET_END = 199
+DISTRICT_PREFIX = 29
+PI_HOST_OFFSET = 1
 
 
 class AllocationError(RuntimeError):
     pass
 
 
-def allocate_tunnel_ip(conn: sqlite3.Connection) -> str:
+def allocate_district_tunnel(conn: sqlite3.Connection) -> str:
+    """First-free /29 inside TUNNEL_OVERLAY, sequential, skipping any subnet
+    already assigned to a district (active or revoked — reuse is risky)."""
     taken = {
-        row["tunnel_ip"]
-        for row in conn.execute("SELECT tunnel_ip FROM peers WHERE status != 'revoked'")
+        ipaddress.ip_network(row["tunnel_subnet"])
+        for row in conn.execute("SELECT tunnel_subnet FROM districts")
     }
-    current = TUNNEL_FIRST_PEER
-    while current <= TUNNEL_LAST_PEER:
-        candidate = f"{current}/32"
+    for candidate in TUNNEL_OVERLAY.subnets(new_prefix=DISTRICT_PREFIX):
         if candidate not in taken:
-            return candidate
-        current += 1
-    raise AllocationError("tunnel /16 exhausted")
+            return str(candidate)
+    raise AllocationError("tunnel overlay exhausted; expand TUNNEL_OVERLAY")
 
 
-def allocate_virtual_subnet(conn: sqlite3.Connection) -> str:
+def pi_tunnel_ip(district_subnet: str) -> str:
+    """Pi always takes the first host IP in the district's /29."""
+    net = ipaddress.ip_network(district_subnet)
+    return f"{net.network_address + PI_HOST_OFFSET}/{net.prefixlen}"
+
+
+def allocate_zabbix_tunnel_ip(conn: sqlite3.Connection, district_id: int) -> str:
+    """Next free host IP in the district's /29 after the Pi slot."""
+    row = conn.execute(
+        "SELECT tunnel_subnet FROM districts WHERE id = ?", (district_id,)
+    ).fetchone()
+    if row is None:
+        raise AllocationError(f"district {district_id} not found")
+    net = ipaddress.ip_network(row["tunnel_subnet"])
     taken = {
-        row["virtual_subnet"]
-        for row in conn.execute(
-            "SELECT virtual_subnet FROM peers WHERE status != 'revoked'"
+        ipaddress.ip_interface(r["tunnel_ip"]).ip
+        for r in conn.execute(
+            "SELECT tunnel_ip FROM zabbix_vms WHERE district_id = ?", (district_id,)
         )
     }
-    for octet in range(VIRTUAL_SECOND_OCTET_START, VIRTUAL_SECOND_OCTET_END + 1):
-        candidate = f"10.{octet}.0.0/16"
-        if candidate not in taken:
-            return candidate
-    raise AllocationError("virtual /16 pool exhausted")
-
-
-def allocate_subnet_mappings(
-    virtual_subnet_cidr: str, real_subnets: list[str]
-) -> tuple[list[dict[str, str]], list[str]]:
-    """Map each real subnet to a sequentially-allocated matching-prefix slice
-    inside the district's virtual /16. Returns (mappings, skipped_reasons)."""
-    virt_net = ipaddress.ip_network(virtual_subnet_cidr)
-    used: set[ipaddress.IPv4Network] = set()
-    mappings: list[dict[str, str]] = []
-    skipped: list[str] = []
-
-    for raw in real_subnets:
-        try:
-            real_net = ipaddress.ip_network(raw, strict=False)
-        except ValueError:
-            skipped.append(f"{raw}: not a valid CIDR")
-            continue
-
-        if real_net.prefixlen <= virt_net.prefixlen:
-            skipped.append(
-                f"{raw}: prefix /{real_net.prefixlen} does not fit inside "
-                f"virtual {virtual_subnet_cidr}"
-            )
-            continue
-
-        slice_iter = virt_net.subnets(new_prefix=real_net.prefixlen)
-        chosen: ipaddress.IPv4Network | None = None
-        for candidate in slice_iter:
-            if not any(candidate.overlaps(u) for u in used):
-                chosen = candidate
-                break
-        if chosen is None:
-            skipped.append(
-                f"{raw}: no free /{real_net.prefixlen} slice in {virtual_subnet_cidr}"
-            )
-            continue
-        used.add(chosen)
-        mappings.append({"virtual": str(chosen), "real": str(real_net)})
-
-    return mappings, skipped
+    taken.add(net.network_address + PI_HOST_OFFSET)  # Pi slot reserved
+    for host in net.hosts():
+        if host not in taken:
+            return f"{host}/{net.prefixlen}"
+    raise AllocationError(
+        f"district /29 {net} full (max {net.num_addresses - 2 - 1} Zabbix VMs)"
+    )

@@ -10,17 +10,16 @@ class EnrollRequest(BaseModel):
     detected_subnets: list[str] = Field(default_factory=list)
 
 
-class SubnetMapping(BaseModel):
-    virtual: str
-    real: str
+class WGPeer(BaseModel):
+    pubkey: str
+    endpoint: str
+    tunnel_ip: str
 
 
 class EnrollResponse(BaseModel):
-    wg_server_pubkey: str
-    wg_endpoint: str
-    assigned_tunnel_ip: str
-    virtual_subnet: str
-    real_subnets: list[str]
-    subnet_mappings: list[SubnetMapping]
     hostname: str
+    assigned_tunnel_ip: str
+    district_subnet: str
+    real_subnets: list[str]
+    peers: list[WGPeer]
     persistent_keepalive: int = 25

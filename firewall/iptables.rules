@@ -7,23 +7,15 @@
 -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 -A INPUT -m conntrack --ctstate INVALID -j DROP
 
-# WireGuard
--A INPUT -p udp --dport 51820 -j ACCEPT
-
-# Management SSH: only from ops network (edit via setup).
+# Management SSH: only from the ops network.
 -A INPUT -s __MGMT_CIDR__ -p tcp --dport 22 -j ACCEPT
-# Admin SSH from inside the tunnel as well.
--A INPUT -i wg0 -p tcp --dport 22 -j ACCEPT
 
-# Enrollment API: public HTTPS (terminated by reverse proxy or uvicorn+certs).
+# Enrollment API (HTTPS). Pis hit this from the public internet.
 -A INPUT -p tcp --dport 8443 -j ACCEPT
 
 -A INPUT -p icmp -j ACCEPT
 
-# Schools (wg0) may only reach the monitoring CIDR (Zabbix servers).
-# Established reverse traffic is always allowed.
--A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A FORWARD -i wg0 -d __MONITORING_CIDR__ -j ACCEPT
--A FORWARD -o wg0 -s __MONITORING_CIDR__ -j ACCEPT
+# Coordinator does not route traffic between schools and Zabbix VMs.
+# Each Zabbix VM runs its own WG tunnel directly to its paired Pi.
 
 COMMIT
