@@ -10,14 +10,24 @@ Group=subterra-hub
 Environment=SUBTERRA_HOST=0.0.0.0
 Environment=SUBTERRA_PORT=8443
 Environment=SUBTERRA_DB=/var/lib/subterra-hub/state.db
+Environment=SUBTERRA_WG_CONF=/etc/wireguard/wg0.conf
+Environment=SUBTERRA_HUB_PRIVKEY=/etc/wireguard/hub.key
+Environment=SUBTERRA_HUB_PUBKEY=/etc/wireguard/hub.pubkey
 ExecStart=/opt/subterra-hub/.venv/bin/subterra-hub-serve
 Restart=on-failure
 RestartSec=5
 
+NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+MemoryDenyWriteExecute=true
 ReadWritePaths=/var/lib/subterra-hub /etc/wireguard
 CapabilityBoundingSet=CAP_NET_ADMIN
 AmbientCapabilities=CAP_NET_ADMIN
