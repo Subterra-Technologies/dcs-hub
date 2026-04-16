@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Provision a fresh Debian 12+ host as the Subterra WG coordinator.
+# Provision a fresh Debian 12+ VM as the Subterra Headscale coordinator.
 #
-# The coordinator is a pure enrollment API + admin CLI. It does NOT run a
-# WireGuard interface and does NOT carry traffic between schools and Zabbix.
-# Each Zabbix VM runs its own WG tunnel directly to its paired Pi; this host
-# only manages pairing metadata and hands out config to both ends.
+# Installs headscale + configures for built-in Let's Encrypt TLS + writes
+# ACL policy + enables the service. Idempotent; safe to re-run.
 #
-# Idempotent. Safe to re-run.
+# Requires, BEFORE running:
+#   1. DNS A record: <COORDINATOR_HOSTNAME> -> this VM's public IP.
+#   2. Edge router port-forwards: TCP/80 + TCP/443 -> this VM.
+#   3. This VM has public reachability for the Let's Encrypt HTTP-01 challenge.
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -16,93 +17,131 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/subterra-hub/setup.env
-INSTALL_DIR=/opt/subterra-hub
-STATE_DIR=/var/lib/subterra-hub
-SERVICE_USER=subterra-hub
+HEADSCALE_DEB_URL="${HEADSCALE_DEB_URL:-https://github.com/juanfont/headscale/releases/download/v0.23.0/headscale_0.23.0_linux_amd64.deb}"
 
 mkdir -p "$(dirname "${ENV_FILE}")"
 if [[ ! -f "${ENV_FILE}" ]]; then
     cat > "${ENV_FILE}" <<'EOF'
-# Subterra WG coordinator setup.
-# Fill in the blanks and re-run setup.sh.
+# Subterra Headscale coordinator config.
+# Fill these in and re-run setup.sh.
 
-# CIDR allowed to SSH into the coordinator from the ops network.
-# Example: 203.0.113.0/24
-MGMT_CIDR=
-
-# Public hostname for the coordinator API. Pis dial this over HTTPS:8443.
-# Example: hub.example.com
+# Public hostname for the Headscale server. Must resolve to this VM.
+# Nodes will register against https://<this>.
 COORDINATOR_HOSTNAME=
+
+# Email for Let's Encrypt registration + cert renewal notices.
+ACME_EMAIL=
+
+# Ops email(s) that should have group:ops access (comma-separated).
+# Written into headscale/acl.hujson at install time.
+OPS_EMAIL=
 EOF
     chmod 600 "${ENV_FILE}"
-    echo "wrote template ${ENV_FILE}; edit it and re-run setup.sh" >&2
+    echo "wrote template ${ENV_FILE}; fill it in and re-run" >&2
     exit 2
 fi
 
 # shellcheck source=/dev/null
 source "${ENV_FILE}"
-for var in MGMT_CIDR COORDINATOR_HOSTNAME; do
+for var in COORDINATOR_HOSTNAME ACME_EMAIL OPS_EMAIL; do
     if [[ -z "${!var:-}" ]]; then
         echo "missing ${var} in ${ENV_FILE}" >&2
         exit 2
     fi
 done
 
-echo "[1/6] installing packages"
+ARCH="$(dpkg --print-architecture)"
+case "${ARCH}" in
+    amd64) HEADSCALE_PKG="headscale_0.23.0_linux_amd64.deb" ;;
+    arm64) HEADSCALE_PKG="headscale_0.23.0_linux_arm64.deb" ;;
+    *) echo "unsupported arch: ${ARCH}"; exit 2 ;;
+esac
+HEADSCALE_DEB_URL="${HEADSCALE_DEB_URL%/headscale_0.23.0_linux_*.deb}/${HEADSCALE_PKG}"
+
+echo "[1/5] installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-    python3-venv python3-pip iptables iptables-persistent \
-    unattended-upgrades ca-certificates rsync
+    curl ca-certificates jq iptables iptables-persistent \
+    unattended-upgrades
 
-echo "[2/6] creating service user and directories"
-if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
-    useradd --system --home-dir "${STATE_DIR}" --shell /usr/sbin/nologin "${SERVICE_USER}"
+if ! command -v headscale >/dev/null 2>&1; then
+    tmp="$(mktemp -d)"
+    echo "downloading ${HEADSCALE_DEB_URL}"
+    curl -fsSL -o "${tmp}/headscale.deb" "${HEADSCALE_DEB_URL}"
+    dpkg -i "${tmp}/headscale.deb"
+    rm -rf "${tmp}"
 fi
-install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${STATE_DIR}"
-install -d -o root -g root -m 0755 "${INSTALL_DIR}"
 
-echo "[3/6] syncing source and building venv"
-rsync -a --delete \
-    --exclude='.git/' --exclude='.venv/' --exclude='__pycache__/' \
-    --exclude='tests/' --exclude='*.db*' \
-    "${REPO_ROOT}/" "${INSTALL_DIR}/"
-chown -R root:root "${INSTALL_DIR}"
-if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
-    python3 -m venv "${INSTALL_DIR}/.venv"
-fi
-"${INSTALL_DIR}/.venv/bin/pip" install -q -U pip
-"${INSTALL_DIR}/.venv/bin/pip" install -q -e "${INSTALL_DIR}"
+echo "[2/5] writing config + ACL"
+install -d -o root -g root -m 0755 /etc/headscale
+sed \
+    -e "s|{{HOSTNAME}}|${COORDINATOR_HOSTNAME}|g" \
+    -e "s|{{ACME_EMAIL}}|${ACME_EMAIL}|g" \
+    "${REPO_ROOT}/headscale/config.yaml" > /etc/headscale/config.yaml
 
-echo "[4/6] initializing DB"
-SUBTERRA_DB="${STATE_DIR}/state.db" \
-    "${INSTALL_DIR}/.venv/bin/subterra-hub" init
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "${STATE_DIR}"
+# Rewrite acl.hujson so group:ops contains the configured OPS_EMAIL(s).
+# Split comma-separated list to JSON array form.
+ops_array="$(
+    IFS=',' read -ra emails <<< "${OPS_EMAIL}"
+    first=1
+    for e in "${emails[@]}"; do
+        e_trim="$(echo "$e" | xargs)"
+        [[ -z "${e_trim}" ]] && continue
+        if [[ ${first} -eq 1 ]]; then
+            printf '"%s"' "${e_trim}"
+            first=0
+        else
+            printf ', "%s"' "${e_trim}"
+        fi
+    done
+)"
+sed "s|\"noah@subterratechnologies\\.com\"|${ops_array}|" \
+    "${REPO_ROOT}/headscale/acl.hujson" > /etc/headscale/acl.hujson
 
-echo "[5/6] installing firewall + systemd unit"
-install -o root -g root -m 0644 "${REPO_ROOT}/firewall/sysctl.conf" \
-    /etc/sysctl.d/99-subterra-hub.conf
-sysctl --system >/dev/null
+install -d -o root -g root -m 0755 /var/lib/headscale
+install -d -o root -g root -m 0755 /var/lib/headscale/cache
+install -d -o root -g root -m 0755 /var/run/headscale
 
+echo "[3/5] installing subterra-admin wrapper"
+install -o root -g root -m 0755 "${REPO_ROOT}/bin/subterra-admin" \
+    /usr/local/bin/subterra-admin
+
+echo "[4/5] firewall"
 mkdir -p /etc/iptables
-sed -e "s|__MGMT_CIDR__|${MGMT_CIDR}|g" \
-    "${REPO_ROOT}/firewall/iptables.rules" > /etc/iptables/rules.v4
+cat > /etc/iptables/rules.v4 <<'EOF'
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+
+# Headscale needs public inbound on 80 (ACME HTTP-01) + 443 (API/DERP).
+-A INPUT -p tcp --dport 80  -j ACCEPT
+-A INPUT -p tcp --dport 443 -j ACCEPT
+
+-A INPUT -p tcp --dport 22 -j ACCEPT
+-A INPUT -p icmp -j ACCEPT
+
+COMMIT
+EOF
 chmod 0600 /etc/iptables/rules.v4
 iptables-restore < /etc/iptables/rules.v4
 
-install -o root -g root -m 0644 "${REPO_ROOT}/systemd/enrollment.service" \
-    /etc/systemd/system/enrollment.service
+echo "[5/5] starting headscale"
 systemctl daemon-reload
-
-echo "[6/6] starting services"
-systemctl enable --now enrollment.service
+systemctl enable --now headscale.service
 systemctl enable --now netfilter-persistent.service
 
-echo
-echo "Coordinator ready."
-echo "Public endpoint: https://${COORDINATOR_HOSTNAME}:8443"
-echo
-echo "Next steps:"
-echo "  sudo -u ${SERVICE_USER} ${INSTALL_DIR}/.venv/bin/subterra-hub add-district <slug> '<Display>'"
-echo "  sudo -u ${SERVICE_USER} ${INSTALL_DIR}/.venv/bin/subterra-hub register-zabbix <district> <zabbix-hostname> <pubkey> <public-endpoint>"
-echo "  sudo -u ${SERVICE_USER} ${INSTALL_DIR}/.venv/bin/subterra-hub issue-token <district>"
+sleep 3
+if systemctl is-active --quiet headscale.service; then
+    echo
+    echo "Coordinator up at https://${COORDINATOR_HOSTNAME}"
+    echo "Next: sudo subterra-admin add-district <slug>"
+else
+    echo "headscale.service failed to start; journalctl -u headscale -e" >&2
+    exit 3
+fi

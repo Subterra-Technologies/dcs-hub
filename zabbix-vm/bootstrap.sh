@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Bootstrap a Zabbix VM as the DC-side WG endpoint for one district.
+# Bootstrap a Zabbix VM onto the Subterra tailnet.
 #
-# Run once on a fresh Debian 12+ Zabbix VM. Installs wireguard, generates a
-# keypair, sets sysctls, opens firewall, and prints the pubkey + next-step
-# instructions for ops to register the VM with the coordinator.
+# Prereqs:
+#   - Debian 12+ VM, reachable out to the coordinator hostname over HTTPS 443.
+#   - Pre-auth key from the coordinator:
+#       subterra-admin issue-token <district> zabbix
 #
-# After ops runs `subterra-hub register-zabbix` on the coordinator, come back
-# and run `apply-config.sh` with the coordinator-rendered config.
+# Usage:
+#   sudo bootstrap.sh \
+#       --coordinator https://hub.subterra.one \
+#       --authkey tskey-auth-xxxxxxxxxxxxxxxx \
+#       --hostname zabbix-oakridge-a \
+#       [--advertise-routes 10.10.99.0/28]
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -14,63 +19,63 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-WG_DIR=/etc/wireguard
-PRIVKEY="${WG_DIR}/privatekey"
-PUBKEY="${WG_DIR}/publickey"
-LISTEN_PORT="${1:-51820}"
+COORDINATOR=""
+AUTHKEY=""
+HOSTNAME_NEW=""
+ADVERTISE_ROUTES=""
 
-echo "[1/4] installing packages"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --coordinator) COORDINATOR="$2"; shift 2 ;;
+        --authkey) AUTHKEY="$2"; shift 2 ;;
+        --hostname) HOSTNAME_NEW="$2"; shift 2 ;;
+        --advertise-routes) ADVERTISE_ROUTES="$2"; shift 2 ;;
+        *) echo "unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+[[ -n "${COORDINATOR}" ]] || { echo "--coordinator required" >&2; exit 2; }
+[[ -n "${AUTHKEY}" ]]     || { echo "--authkey required" >&2; exit 2; }
+
+echo "[1/3] installing tailscale"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq wireguard wireguard-tools ufw
-
-echo "[2/4] enabling IP forwarding (for routing school real subnets via wg0)"
-cat > /etc/sysctl.d/99-subterra-zabbix.conf <<'EOF'
-net.ipv4.ip_forward = 1
-EOF
-sysctl --system >/dev/null
-
-echo "[3/4] generating WG keypair (idempotent)"
-mkdir -p "${WG_DIR}"
-chmod 700 "${WG_DIR}"
-if [[ ! -s "${PRIVKEY}" ]]; then
-    ( umask 077 && wg genkey > "${PRIVKEY}" )
-    wg pubkey < "${PRIVKEY}" > "${PUBKEY}"
+if ! command -v tailscale >/dev/null 2>&1; then
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg \
+        | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+    curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list \
+        | tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+    apt-get update -qq
+    apt-get install -y -qq tailscale
 fi
-chmod 600 "${PRIVKEY}"
-chmod 644 "${PUBKEY}"
 
-echo "[4/4] opening firewall for WG"
-ufw --force enable >/dev/null
-ufw allow "${LISTEN_PORT}/udp" >/dev/null
-ufw allow OpenSSH >/dev/null
+echo "[2/3] setting hostname (if requested)"
+if [[ -n "${HOSTNAME_NEW}" ]]; then
+    hostnamectl set-hostname "${HOSTNAME_NEW}"
+fi
 
-PUB_RAW="$(cat "${PUBKEY}")"
+echo "[3/3] joining tailnet"
+args=(
+    up
+    --login-server "${COORDINATOR}"
+    --authkey "${AUTHKEY}"
+    --ssh
+    --accept-routes
+    --accept-dns=false
+    --reset
+)
+if [[ -n "${HOSTNAME_NEW}" ]]; then
+    args+=(--hostname "${HOSTNAME_NEW}")
+fi
+if [[ -n "${ADVERTISE_ROUTES}" ]]; then
+    args+=(--advertise-routes "${ADVERTISE_ROUTES}")
+fi
 
-cat <<EOF
+tailscale "${args[@]}"
 
-============================================================
-Bootstrap complete. WG keypair at ${WG_DIR}.
-
-Your public key is:
-  ${PUB_RAW}
-
-Next, have a coordinator admin run (on the hub):
-
-  sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub \\
-    register-zabbix <district-slug> $(hostname) '${PUB_RAW}' \\
-      <public-host-or-ip>:${LISTEN_PORT} --listen-port ${LISTEN_PORT}
-
-Then on the hub, render this VM's config:
-
-  sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub \\
-    show-zabbix-config $(hostname)
-
-Paste that config (stdin) into this VM via:
-
-  sudo /path/to/apply-config.sh
-
-Edge router: port-forward UDP ${LISTEN_PORT} from your public IP to this VM.
-DNS: point the hostname you used in --public-host at the public IP.
-============================================================
-EOF
+echo
+echo "Joined tailnet. Status:"
+tailscale status --peers=false
+echo
+echo "This Zabbix VM now routes district traffic via the Pi in its district."
+echo "Ask the coordinator admin to approve any advertised routes with:"
+echo "  subterra-admin routes <district>"

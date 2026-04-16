@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Thin wrapper around `headscale` for Subterra's daily fleet ops.
+#
+# Conventions:
+#   - Every school district maps to one Headscale "user". The district
+#     slug IS the user name.
+#   - Every node in a district (Pi or Zabbix VM) belongs to that user.
+#   - Tags: "pi", "zabbix", "ops" — set via --tags on preauthkey creation.
+#   - Same-district access enforced by ACL (autogroup:self).
+set -euo pipefail
+
+cmd="${1:-}"
+shift || true
+
+usage() {
+    cat <<EOF
+usage: subterra-admin <command> [args]
+
+  add-district <slug>
+      Create a Headscale user for a new school district.
+
+  list-districts
+      List all district users.
+
+  issue-token <district> <pi|zabbix> [--expiration 14d] [--ephemeral]
+      Generate a pre-auth key for a new node. Prints the raw key to stdout.
+      Give this key to the Pi (in /boot/firmware/subterra-enroll.json) or
+      to the Zabbix VM at tailscale-up time.
+
+  list-nodes [<district>]
+      List registered nodes, optionally filtered by district.
+
+  routes [<district>]
+      Show advertised subnet routes. Routes under RFC1918 are auto-approved
+      by ACL for tag:pi. Override manually via: headscale routes enable -r <id>.
+
+  approve-route <route-id>
+      Force-approve a specific advertised route (for non-RFC1918 cases).
+
+  delete-node <hostname>
+      Remove a node from the tailnet. Use for revocation or rotation.
+
+  policy-reload
+      Re-apply /etc/headscale/acl.hujson.
+
+Environment: HEADSCALE="${HEADSCALE:-sudo headscale}"
+EOF
+}
+
+HEADSCALE="${HEADSCALE:-sudo headscale}"
+
+case "${cmd}" in
+    add-district)
+        slug="${1:?district slug required}"
+        ${HEADSCALE} users create "${slug}"
+        echo "district '${slug}' created"
+        ;;
+
+    list-districts)
+        ${HEADSCALE} users list
+        ;;
+
+    issue-token)
+        slug="${1:?district slug required}"
+        role="${2:?role required (pi|zabbix)}"
+        shift 2
+        if [[ "${role}" != "pi" && "${role}" != "zabbix" ]]; then
+            echo "role must be 'pi' or 'zabbix'" >&2
+            exit 2
+        fi
+        expiration="14d"
+        reusable_flag=""
+        ephemeral_flag=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --expiration) expiration="$2"; shift 2 ;;
+                --reusable) reusable_flag="--reusable"; shift ;;
+                --ephemeral) ephemeral_flag="--ephemeral"; shift ;;
+                *) echo "unknown flag $1"; exit 2 ;;
+            esac
+        done
+        # shellcheck disable=SC2086
+        ${HEADSCALE} preauthkeys create \
+            --user "${slug}" \
+            --expiration "${expiration}" \
+            --tags "tag:${role}" \
+            ${reusable_flag} ${ephemeral_flag} \
+            --output plain
+        ;;
+
+    list-nodes)
+        slug="${1:-}"
+        if [[ -n "${slug}" ]]; then
+            ${HEADSCALE} nodes list --user "${slug}"
+        else
+            ${HEADSCALE} nodes list
+        fi
+        ;;
+
+    routes)
+        slug="${1:-}"
+        if [[ -n "${slug}" ]]; then
+            ${HEADSCALE} routes list --user "${slug}"
+        else
+            ${HEADSCALE} routes list
+        fi
+        ;;
+
+    approve-route)
+        route_id="${1:?route id required}"
+        ${HEADSCALE} routes enable -r "${route_id}"
+        ;;
+
+    delete-node)
+        host="${1:?node hostname required}"
+        nid="$(${HEADSCALE} nodes list --output json | \
+               jq -r --arg h "${host}" '.[] | select(.given_name==$h or .name==$h) | .id')"
+        if [[ -z "${nid}" ]]; then
+            echo "no node named '${host}'" >&2
+            exit 1
+        fi
+        ${HEADSCALE} nodes delete -i "${nid}" --force
+        ;;
+
+    policy-reload)
+        ${HEADSCALE} policy set -f /etc/headscale/acl.hujson
+        ;;
+
+    ""|help|--help|-h)
+        usage
+        ;;
+
+    *)
+        echo "unknown command: ${cmd}" >&2
+        usage
+        exit 2
+        ;;
+esac
