@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 
 from . import allocator, db, tokens, wg
-from .models import EnrollRequest, EnrollResponse
+from .models import EnrollRequest, EnrollResponse, SubnetMapping
 
 DB_PATH = Path(os.environ.get("SUBTERRA_DB", "/var/lib/subterra-hub/state.db"))
 WG_ENDPOINT = os.environ.get("SUBTERRA_WG_ENDPOINT", "hub.example.com:51820")
@@ -88,12 +88,16 @@ def enroll(req: EnrollRequest) -> EnrollResponse:
                 (_now_iso(), token_hash),
             )
 
+        mappings, _ = allocator.allocate_subnet_mappings(
+            virtual_subnet, req.detected_subnets
+        )
         return EnrollResponse(
             wg_server_pubkey=_hub_pubkey(),
             wg_endpoint=WG_ENDPOINT,
             assigned_tunnel_ip=tunnel_ip,
             virtual_subnet=virtual_subnet,
             real_subnets=req.detected_subnets,
+            subnet_mappings=[SubnetMapping(**m) for m in mappings],
             hostname=hostname,
         )
     finally:
@@ -101,12 +105,15 @@ def enroll(req: EnrollRequest) -> EnrollResponse:
 
 
 def _response_from_row(row) -> EnrollResponse:
+    real_subnets = json.loads(row["real_subnets"])
+    mappings, _ = allocator.allocate_subnet_mappings(row["virtual_subnet"], real_subnets)
     return EnrollResponse(
         wg_server_pubkey=_hub_pubkey(),
         wg_endpoint=WG_ENDPOINT,
         assigned_tunnel_ip=row["tunnel_ip"],
         virtual_subnet=row["virtual_subnet"],
-        real_subnets=json.loads(row["real_subnets"]),
+        real_subnets=real_subnets,
+        subnet_mappings=[SubnetMapping(**m) for m in mappings],
         hostname=row["hostname"],
     )
 

@@ -102,6 +102,10 @@ def main() -> int:
         assert body["assigned_tunnel_ip"] == "10.200.0.2/32", body
         assert body["virtual_subnet"] == "10.100.0.0/16", body
         assert body["real_subnets"] == payload["detected_subnets"]
+        assert body["subnet_mappings"] == [
+            {"virtual": "10.100.0.0/24", "real": "192.168.1.0/24"},
+            {"virtual": "10.100.1.0/24", "real": "192.168.10.0/24"},
+        ], body["subnet_mappings"]
 
         idem = client.post("/v1/enroll", json=payload)
         assert idem.status_code == 200, idem.text
@@ -134,13 +138,21 @@ def main() -> int:
         pi2_pub = subprocess.run(
             ["wg", "pubkey"], input=pi2_priv, capture_output=True, text=True, check=True
         ).stdout.strip()
+        # Mixed 192.168.* and 10.* in one district — third-octet collision case
+        # that the old mapping code got wrong.
+        mixed_subnets = [
+            "192.168.1.0/24",
+            "10.5.0.0/24",
+            "10.10.0.0/24",
+            "192.168.10.0/24",
+        ]
         resp2 = client.post(
             "/v1/enroll",
             json={
                 "serial": "PI000TESTSERIAL2",
                 "pubkey": pi2_pub,
                 "enroll_token": token2,
-                "detected_subnets": ["10.0.0.0/24"],
+                "detected_subnets": mixed_subnets,
             },
         )
         assert resp2.status_code == 200, resp2.text
@@ -148,6 +160,15 @@ def main() -> int:
         assert b2["hostname"] == "oakridge-pi02", b2
         assert b2["assigned_tunnel_ip"] == "10.200.0.3/32", b2
         assert b2["virtual_subnet"] == "10.101.0.0/16", b2
+        # Sequential allocation in the district's /16, no collisions.
+        assert b2["subnet_mappings"] == [
+            {"virtual": "10.101.0.0/24", "real": "192.168.1.0/24"},
+            {"virtual": "10.101.1.0/24", "real": "10.5.0.0/24"},
+            {"virtual": "10.101.2.0/24", "real": "10.10.0.0/24"},
+            {"virtual": "10.101.3.0/24", "real": "192.168.10.0/24"},
+        ], b2["subnet_mappings"]
+        virts = [m["virtual"] for m in b2["subnet_mappings"]]
+        assert len(set(virts)) == len(virts), f"virtual slice collision: {virts}"
 
         rev = run_cli("revoke", "PI000TESTSERIAL1")
         assert "revoked" in rev.stdout, rev.stdout
