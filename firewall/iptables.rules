@@ -1,0 +1,17 @@
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -p udp --dport 51820 -j ACCEPT
+-A INPUT -p tcp --dport 22 -j ACCEPT
+-A INPUT -p icmp -j ACCEPT
+
+# Schools -> Zabbix only. Substitute ZABBIX_IP at deploy time.
+-A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A FORWARD -i wg0 -d __ZABBIX_IP__/32 -j ACCEPT
+-A FORWARD -o wg0 -s __ZABBIX_IP__/32 -j ACCEPT
+
+COMMIT
