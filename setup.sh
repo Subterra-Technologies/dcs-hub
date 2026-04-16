@@ -23,9 +23,11 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 # Subterra WG hub setup configuration.
 # Fill in the blanks and re-run setup.sh.
 
-# IPv4 address of the Zabbix server on the datacenter LAN.
-# Schools reach this and only this through the tunnel.
-ZABBIX_IP=
+# CIDR of the monitoring VLAN/subnet where Zabbix servers live.
+# Schools (wg0) can only reach hosts inside this CIDR.
+# Use a small dedicated block so adding a new Zabbix VM is plug-and-play.
+# Example: 10.10.99.0/28  (16 addresses, plenty for Zabbix fleet)
+MONITORING_CIDR=
 
 # CIDR allowed to SSH into the concentrator from the management network.
 # Example: 203.0.113.0/24
@@ -42,7 +44,7 @@ fi
 
 # shellcheck source=/dev/null
 source "${ENV_FILE}"
-for var in ZABBIX_IP MGMT_CIDR WG_ENDPOINT; do
+for var in MONITORING_CIDR MGMT_CIDR WG_ENDPOINT; do
     if [[ -z "${!var:-}" ]]; then
         echo "missing ${var} in ${ENV_FILE}" >&2
         exit 2
@@ -94,7 +96,7 @@ install -o root -g root -m 0644 "${REPO_ROOT}/firewall/sysctl.conf" \
 sysctl --system >/dev/null
 
 mkdir -p /etc/iptables
-sed -e "s|__ZABBIX_IP__|${ZABBIX_IP}|g" \
+sed -e "s|__MONITORING_CIDR__|${MONITORING_CIDR}|g" \
     -e "s|__MGMT_CIDR__|${MGMT_CIDR}|g" \
     "${REPO_ROOT}/firewall/iptables.rules" > /etc/iptables/rules.v4
 chmod 0600 /etc/iptables/rules.v4

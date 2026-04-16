@@ -20,9 +20,10 @@
 
 -A INPUT -p icmp -j ACCEPT
 
-# Schools (wg0) may only reach the Zabbix server. Established reverse traffic allowed.
+# Schools (wg0) may only reach the monitoring CIDR (Zabbix servers).
+# Established reverse traffic is always allowed.
 -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A FORWARD -i wg0 -d __ZABBIX_IP__/32 -j ACCEPT
--A FORWARD -o wg0 -s __ZABBIX_IP__/32 -j ACCEPT
+-A FORWARD -i wg0 -d __MONITORING_CIDR__ -j ACCEPT
+-A FORWARD -o wg0 -s __MONITORING_CIDR__ -j ACCEPT
 
 COMMIT
