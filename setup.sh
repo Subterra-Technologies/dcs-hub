@@ -17,7 +17,7 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=/etc/subterra-hub/setup.env
-HEADSCALE_DEB_URL="${HEADSCALE_DEB_URL:-https://github.com/juanfont/headscale/releases/download/v0.23.0/headscale_0.23.0_linux_amd64.deb}"
+HEADSCALE_VERSION="${HEADSCALE_VERSION:-0.28.0}"
 
 mkdir -p "$(dirname "${ENV_FILE}")"
 if [[ ! -f "${ENV_FILE}" ]]; then
@@ -52,11 +52,10 @@ done
 
 ARCH="$(dpkg --print-architecture)"
 case "${ARCH}" in
-    amd64) HEADSCALE_PKG="headscale_0.23.0_linux_amd64.deb" ;;
-    arm64) HEADSCALE_PKG="headscale_0.23.0_linux_arm64.deb" ;;
+    amd64|arm64) ;;
     *) echo "unsupported arch: ${ARCH}"; exit 2 ;;
 esac
-HEADSCALE_DEB_URL="${HEADSCALE_DEB_URL%/headscale_0.23.0_linux_*.deb}/${HEADSCALE_PKG}"
+HEADSCALE_DEB_URL="https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_${ARCH}.deb"
 
 echo "[1/5] installing packages"
 export DEBIAN_FRONTEND=noninteractive

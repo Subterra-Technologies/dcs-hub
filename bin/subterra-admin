@@ -49,6 +49,20 @@ EOF
 
 HEADSCALE="${HEADSCALE:-sudo headscale}"
 
+# Resolve a district slug to the numeric Headscale user ID.
+# Headscale's `preauthkeys create --user` takes a uint, not a name.
+user_id_for() {
+    local slug="$1"
+    local uid
+    uid="$(${HEADSCALE} --output json users list 2>/dev/null | \
+           jq -r --arg s "${slug}" '.[] | select(.name==$s) | .id')"
+    if [[ -z "${uid}" ]]; then
+        echo "no district '${slug}' — create it first with add-district" >&2
+        return 1
+    fi
+    echo "${uid}"
+}
+
 case "${cmd}" in
     add-district)
         slug="${1:?district slug required}"
@@ -79,16 +93,17 @@ case "${cmd}" in
                 *) echo "unknown flag $1"; exit 2 ;;
             esac
         done
+        uid="$(user_id_for "${slug}")"
         # shellcheck disable=SC2086
         ${HEADSCALE} preauthkeys create \
-            --user "${slug}" \
+            --user "${uid}" \
             --expiration "${expiration}" \
             --tags "tag:${role}" \
-            ${reusable_flag} ${ephemeral_flag} \
-            --output plain
+            ${reusable_flag} ${ephemeral_flag}
         ;;
 
     list-nodes)
+        # `nodes list --user` takes the name string (NOT the numeric id).
         slug="${1:-}"
         if [[ -n "${slug}" ]]; then
             ${HEADSCALE} nodes list --user "${slug}"
@@ -100,15 +115,18 @@ case "${cmd}" in
     routes)
         slug="${1:-}"
         if [[ -n "${slug}" ]]; then
-            ${HEADSCALE} routes list --user "${slug}"
+            ${HEADSCALE} --output json nodes list --user "${slug}" | \
+                jq -r '.[] | {id,name,available_routes:.availableRoutes,approved:.approvedRoutes}'
         else
-            ${HEADSCALE} routes list
+            ${HEADSCALE} --output json nodes list | \
+                jq -r '.[] | {id,name,available_routes:.availableRoutes,approved:.approvedRoutes}'
         fi
         ;;
 
     approve-route)
-        route_id="${1:?route id required}"
-        ${HEADSCALE} routes enable -r "${route_id}"
+        node_id="${1:?node id required}"
+        route="${2:?route (e.g. 192.168.1.0/24) required}"
+        ${HEADSCALE} nodes approve-routes --identifier "${node_id}" --routes "${route}"
         ;;
 
     delete-node)
