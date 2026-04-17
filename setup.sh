@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Provision a fresh Debian 12+ VM as the Subterra Headscale coordinator.
 #
-# Installs headscale + configures for built-in Let's Encrypt TLS + writes
-# ACL policy + enables the service. Idempotent; safe to re-run.
+# Installs Headscale + cloudflared + the fleet dashboard + backup and
+# cert-check timers. Idempotent; safe to re-run.
 #
-# Requires, BEFORE running:
-#   1. DNS A record: <COORDINATOR_HOSTNAME> -> this VM's public IP.
-#   2. Edge router port-forwards: TCP/80 + TCP/443 -> this VM.
-#   3. This VM has public reachability for the Let's Encrypt HTTP-01 challenge.
+# Prereqs BEFORE running:
+#   1. A Cloudflare Tunnel created in Zero Trust → Networks → Tunnels,
+#      with its Public Hostname tab mapping <COORDINATOR_HOSTNAME> to
+#      `HTTP localhost:8080`. Copy the install token.
+#   2. This VM has outbound HTTPS to the internet (for cloudflared).
+#   3. No inbound ports required — cloudflared dials OUT. Only MGMT_CIDR
+#      reaches the VM directly (SSH, dashboard).
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -141,6 +144,13 @@ iptables-restore < /etc/iptables/rules.v4
 install -d -o root -g root -m 0755 /usr/local/lib/subterra-dashboard
 install -o root -g root -m 0644 "${REPO_ROOT}/dashboard/app.py" \
     /usr/local/lib/subterra-dashboard/app.py
+
+# App-level allowlist matching the iptables MGMT_CIDR rule (defense in depth).
+install -d -o root -g root -m 0755 /etc/systemd/system/subterra-dashboard.service.d
+cat > /etc/systemd/system/subterra-dashboard.service.d/allow-cidr.conf <<EOF
+[Service]
+Environment=SUBTERRA_DASHBOARD_ALLOW_CIDRS=${MGMT_CIDR}
+EOF
 
 echo "[5/5] starting headscale + cloudflared + dashboard + timers"
 for unit in subterra-cert-check.service subterra-cert-check.timer \

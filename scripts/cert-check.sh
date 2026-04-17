@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Check the coordinator's Let's Encrypt cert via its public endpoint.
+# Check the coordinator's public TLS cert expiry.
+#
+# When running behind Cloudflare Tunnel (the current default), this
+# validates Cloudflare's edge cert — auto-renewed by Cloudflare, so it's
+# mostly a reachability check. Does NOT detect a broken cloudflared:
+# if cloudflared is down Cloudflare still serves a valid cert with a 1033
+# error page. Pair with a Zabbix HTTP probe of /health for full liveness.
+#
+# When running with direct Let's Encrypt (no tunnel), this catches
+# renewal failures before they take the fleet down.
+#
 # Exits:
 #   0 — cert valid, > WARN_DAYS remaining
 #   1 — cert valid but < WARN_DAYS remaining (systemd will mark unit failed)
 #   2 — cert check failed entirely (endpoint unreachable, cert invalid)
-#
-# Intended to run as a systemd timer on the coordinator VM itself.
-# Sources the same /etc/subterra-hub/setup.env setup.sh wrote.
 set -euo pipefail
 
 ENV_FILE="${SUBTERRA_ENV_FILE:-/etc/subterra-hub/setup.env}"

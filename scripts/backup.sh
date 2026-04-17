@@ -50,10 +50,16 @@ done
 
 chmod -R go-rwx "${out_dir}"
 
-# Optional remote sync.
+# Optional remote sync. If BACKUP_REMOTE is configured but the push
+# fails, exit non-zero so systemd marks the backup unit failed and ops
+# monitoring (Zabbix on systemd unit state) alerts — silent offsite
+# failures are the worst kind.
 if [[ -n "${BACKUP_REMOTE}" ]]; then
-    rsync -a --delete "${BACKUP_DIR}/" "${BACKUP_REMOTE%/}/" || \
-        echo "backup: WARN remote rsync to ${BACKUP_REMOTE} failed" >&2
+    if ! rsync -a --delete "${BACKUP_DIR}/" "${BACKUP_REMOTE%/}/"; then
+        echo "backup: FAIL remote rsync to ${BACKUP_REMOTE} failed" >&2
+        echo "backup: local snapshot at ${out_dir} is still good" >&2
+        exit 1
+    fi
 fi
 
 # Retention: delete directories older than RETENTION days.

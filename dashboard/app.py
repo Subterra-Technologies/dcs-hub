@@ -12,6 +12,7 @@ via iptables rule installed by setup.sh.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shlex
@@ -24,6 +25,19 @@ from html import escape
 HEADSCALE_BIN = os.environ.get("SUBTERRA_HEADSCALE_BIN", "headscale")
 HEADSCALE_CONFIG = os.environ.get("SUBTERRA_HEADSCALE_CONFIG", "/etc/headscale/config.yaml")
 CACHE_TTL_SEC = int(os.environ.get("SUBTERRA_DASHBOARD_CACHE_SEC", "10"))
+
+# Defense in depth: even if iptables fails, reject non-allowlisted source
+# IPs at the app layer. Empty = permit all (dev mode).
+_raw_allow = os.environ.get("SUBTERRA_DASHBOARD_ALLOW_CIDRS", "")
+ALLOW_CIDRS: list = []
+for _c in (x.strip() for x in _raw_allow.split(",")):
+    if not _c:
+        continue
+    try:
+        ALLOW_CIDRS.append(ipaddress.ip_network(_c, strict=False))
+    except ValueError:
+        print(f"dashboard: ignoring invalid CIDR '{_c}' in SUBTERRA_DASHBOARD_ALLOW_CIDRS",
+              flush=True)
 
 _lock = threading.Lock()
 _cache: dict = {"ts": 0.0, "data": {}}
@@ -244,7 +258,20 @@ def render_html(s: dict) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _client_allowed(self) -> bool:
+        if not ALLOW_CIDRS:
+            return True
+        try:
+            addr = ipaddress.ip_address(self.client_address[0])
+        except (ValueError, IndexError):
+            return False
+        return any(addr in net for net in ALLOW_CIDRS)
+
     def do_GET(self):
+        if not self._client_allowed():
+            self._respond(403, b"forbidden: source not in SUBTERRA_DASHBOARD_ALLOW_CIDRS",
+                          "text/plain")
+            return
         if self.path == "/healthz":
             self._respond(200, b'{"status":"ok"}', "application/json")
             return

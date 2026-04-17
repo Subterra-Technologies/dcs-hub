@@ -106,5 +106,25 @@ echo "[4] 404 on unknown path"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/does-not-exist")
 [[ "${code}" = "404" ]] || { echo "FAIL: unknown path returned ${code}"; exit 1; }
 
+echo "[5] CIDR allowlist denies non-allowlisted source"
+# Stop the open dashboard, start one with a non-loopback CIDR.
+kill "${DASH_PID}" 2>/dev/null || true
+wait "${DASH_PID}" 2>/dev/null || true
+PORT2="$(python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1]);s.close()')"
+SUBTERRA_HEADSCALE_BIN="${HSBIN}" \
+SUBTERRA_HEADSCALE_CONFIG="${SANDBOX}/etc/config.yaml" \
+SUBTERRA_DASHBOARD_HOST=127.0.0.1 \
+SUBTERRA_DASHBOARD_PORT="${PORT2}" \
+SUBTERRA_DASHBOARD_CACHE_SEC=0 \
+SUBTERRA_DASHBOARD_ALLOW_CIDRS=203.0.113.0/24 \
+    python3 "${HERE}/dashboard/app.py" >"${SANDBOX}/dash2.log" 2>&1 &
+DASH_PID=$!
+for _ in $(seq 1 20); do
+    curl -s -o /dev/null "http://127.0.0.1:${PORT2}/healthz" 2>/dev/null && break
+    sleep 0.2
+done
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT2}/")
+[[ "${code}" = "403" ]] || { echo "FAIL: expected 403 for non-allowlisted, got ${code}"; exit 1; }
+
 echo
-echo "OK: dashboard smoke green (html + json + healthz, port ${PORT})"
+echo "OK: dashboard smoke green (html + json + healthz + allowlist, port ${PORT})"
