@@ -116,5 +116,19 @@ echo "[8] policy-reload (re-applies our ACL file without restart)"
     echo "  (policy-reload skipped: may not be supported in this headscale)"
 }
 
+echo "[9] keys list shows outstanding unclaimed keys"
+out="$("${SUBTERRA}" keys list)"
+# We issued keys for oakridge (pi+zabbix) and lincoln (pi). All three
+# should be outstanding (unused).
+grep -qc oakridge <<<"${out}" || { echo "FAIL: no oakridge keys in listing"; exit 1; }
+grep -qc lincoln  <<<"${out}" || { echo "FAIL: no lincoln keys in listing"; exit 1; }
+count=$(grep -cE '^(oakridge|lincoln) ' <<<"${out}" || true)
+[[ "${count}" -ge 3 ]] || { echo "FAIL: expected >=3 outstanding keys, got ${count}"; exit 1; }
+
+echo "[10] keys list filter by district"
+out_oak="$("${SUBTERRA}" keys list oakridge)"
+grep -q lincoln <<<"${out_oak}" && { echo "FAIL: lincoln leaked into oakridge filter"; exit 1; }
+grep -q oakridge <<<"${out_oak}" || { echo "FAIL: oakridge missing from its own filter"; exit 1; }
+
 echo
 echo "OK: hub smoke test green"

@@ -61,8 +61,8 @@ echo "[1/5] installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-    curl ca-certificates jq iptables iptables-persistent \
-    unattended-upgrades
+    curl ca-certificates jq sqlite3 openssl iptables iptables-persistent \
+    unattended-upgrades rsync
 
 if ! command -v headscale >/dev/null 2>&1; then
     tmp="$(mktemp -d)"
@@ -102,9 +102,15 @@ install -d -o root -g root -m 0755 /var/lib/headscale
 install -d -o root -g root -m 0755 /var/lib/headscale/cache
 install -d -o root -g root -m 0755 /var/run/headscale
 
-echo "[3/5] installing subterra-admin wrapper"
+echo "[3/5] installing subterra-admin wrapper + helpers"
 install -o root -g root -m 0755 "${REPO_ROOT}/bin/subterra-admin" \
     /usr/local/bin/subterra-admin
+install -o root -g root -m 0755 "${REPO_ROOT}/scripts/cert-check.sh" \
+    /usr/local/bin/subterra-cert-check
+install -o root -g root -m 0755 "${REPO_ROOT}/scripts/backup.sh" \
+    /usr/local/bin/subterra-backup
+install -o root -g root -m 0755 "${REPO_ROOT}/scripts/restore.sh" \
+    /usr/local/bin/subterra-restore
 
 echo "[4/5] firewall"
 mkdir -p /etc/iptables
@@ -130,10 +136,18 @@ EOF
 chmod 0600 /etc/iptables/rules.v4
 iptables-restore < /etc/iptables/rules.v4
 
-echo "[5/5] starting headscale"
+echo "[5/5] starting headscale + timers"
+for unit in subterra-cert-check.service subterra-cert-check.timer \
+            subterra-backup.service subterra-backup.timer; do
+    install -o root -g root -m 0644 "${REPO_ROOT}/systemd/${unit}" \
+        "/etc/systemd/system/${unit}"
+done
+install -d -o root -g root -m 0700 /var/backups/subterra-hub
 systemctl daemon-reload
 systemctl enable --now headscale.service
 systemctl enable --now netfilter-persistent.service
+systemctl enable --now subterra-cert-check.timer
+systemctl enable --now subterra-backup.timer
 
 sleep 3
 if systemctl is-active --quiet headscale.service; then

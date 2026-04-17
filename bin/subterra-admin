@@ -22,10 +22,16 @@ usage: subterra-admin <command> [args]
   list-districts
       List all district users.
 
-  issue-token <district> <pi|zabbix> [--expiration 14d] [--ephemeral]
+  issue-token <district> <pi|zabbix> [--expiration 3d] [--ephemeral]
       Generate a pre-auth key for a new node. Prints the raw key to stdout.
       Give this key to the Pi (in /boot/firmware/subterra-enroll.json) or
-      to the Zabbix VM at tailscale-up time.
+      to the Zabbix VM at tailscale-up time. Default 3d to keep pre-ship
+      NVMes short-lived; pass --expiration 7d etc. for longer windows.
+
+  keys list [<district>]
+      Show outstanding (unused, unexpired) pre-auth keys. Catches keys
+      that were issued but never claimed — e.g. Pis lost in transit or
+      ops forgot to ship.
 
   list-nodes [<district>]
       List registered nodes, optionally filtered by district.
@@ -82,7 +88,7 @@ case "${cmd}" in
             echo "role must be 'pi' or 'zabbix'" >&2
             exit 2
         fi
-        expiration="14d"
+        expiration="3d"
         reusable_flag=""
         ephemeral_flag=""
         while [[ $# -gt 0 ]]; do
@@ -142,6 +148,39 @@ case "${cmd}" in
 
     policy-reload)
         ${HEADSCALE} policy set -f /etc/headscale/acl.hujson
+        ;;
+
+    keys)
+        sub="${1:-}"; shift || true
+        case "${sub}" in
+            list)
+                slug="${1:-}"
+                now="$(date -u +%s)"
+                # preauthkeys list returns ALL keys (no --user filter in v0.28).
+                # We post-filter on .user.name in jq. Each entry has .user, .acl_tags,
+                # .used (bool|null), .expiration.seconds (unix).
+                keys_json="$(${HEADSCALE} --output json preauthkeys list 2>/dev/null || echo '[]')"
+                printf '%-20s %-12s %-10s %s\n' "DISTRICT" "EXPIRES-IN" "TAGS" "KEY-PREFIX"
+                jq -r --arg slug "${slug}" --arg now "${now}" '
+                    .[]
+                    | select($slug == "" or .user.name == $slug)
+                    | select((.used // false) == false)
+                    | select((.expiration.seconds // 0) > ($now | tonumber))
+                    | [
+                        .user.name,
+                        (((.expiration.seconds) - ($now | tonumber)) / 3600 | floor | tostring + "h"),
+                        ((.acl_tags // []) | join(",")),
+                        (.key | .[0:16] + "...")
+                      ] | @tsv
+                ' <<<"${keys_json}" | while IFS=$'\t' read -r d e t k; do
+                    printf '%-20s %-12s %-10s %s\n' "${d}" "${e}" "${t}" "${k}"
+                done
+                ;;
+            *)
+                echo "usage: subterra-admin keys list [<district>]" >&2
+                exit 2
+                ;;
+        esac
         ;;
 
     ""|help|--help|-h)
