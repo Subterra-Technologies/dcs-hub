@@ -151,10 +151,18 @@ def render_html(s: dict) -> str:
     if not isinstance(nodes, list): nodes = []
     if not isinstance(keys, list):  keys  = []
 
+    def _district_of(n: dict) -> str:
+        # Headscale moves tagged nodes to the synthetic 'tagged-devices'
+        # user. The original district is preserved on the preauth key.
+        user_name = (n.get("user") or {}).get("name") or ""
+        if user_name and user_name != "tagged-devices":
+            return user_name
+        pk_user = ((n.get("pre_auth_key") or {}).get("user") or {}).get("name")
+        return pk_user or user_name or "?"
+
     per_user: dict[str, list] = {u.get("name", "?"): [] for u in users}
     for n in nodes:
-        un = (n.get("user") or {}).get("name", "?")
-        per_user.setdefault(un, []).append(n)
+        per_user.setdefault(_district_of(n), []).append(n)
 
     n_online = sum(1 for n in nodes if n.get("online"))
     n_offline = len(nodes) - n_online
@@ -174,24 +182,24 @@ def render_html(s: dict) -> str:
             )
             continue
         for n in u_nodes:
-            tags = n.get("forcedTags") or n.get("validTags") or []
+            tags = n.get("tags") or n.get("forced_tags") or n.get("valid_tags") or []
             tag_html = " ".join(f"<span class=tag>{escape(t)}</span>" for t in tags) or \
                        "<span class=muted>no tag</span>"
             online = n.get("online")
             dot_class = "online" if online else ("offline" if online is False else "unknown")
-            last_seen_epoch = (n.get("lastSeen") or {}).get("seconds", 0) or 0
-            routes = (n.get("approvedRoutes") or []) + (
-                [r for r in (n.get("availableRoutes") or [])
-                 if r not in (n.get("approvedRoutes") or [])]
-            )
+            last_seen_epoch = (n.get("last_seen") or {}).get("seconds", 0) or 0
+            approved = n.get("approved_routes") or []
+            available = n.get("available_routes") or []
+            routes = list(approved) + [r for r in available if r not in approved]
             routes_html = (
                 ", ".join(f"<code>{escape(r)}</code>" for r in routes) if routes
                 else "<span class=muted>—</span>"
             )
+            name = n.get("given_name") or n.get("name") or "?"
             rows_districts.append(
                 f"<tr>"
                 f"<td>{escape(uname)}</td>"
-                f"<td><span class='dot {dot_class}'></span>{escape(n.get('givenName') or n.get('name','?'))} {tag_html}</td>"
+                f"<td><span class='dot {dot_class}'></span>{escape(name)} {tag_html}</td>"
                 f"<td>{_fmt_age(last_seen_epoch)}</td>"
                 f"<td>{routes_html}</td>"
                 f"</tr>"
