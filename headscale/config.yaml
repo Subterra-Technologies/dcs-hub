@@ -55,3 +55,7 @@ dns:
 
 unix_socket: /var/run/headscale/headscale.sock
 unix_socket_permission: "0770"
+
+# Required by headscale v0.23+ for the Tailscale v2 (Noise) protocol.
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key

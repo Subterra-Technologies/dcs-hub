@@ -135,6 +135,11 @@ sed "s|\"noah@subterratechnologies\\.com\"|${ops_array}|" \
 install -d -o root -g root -m 0755 /var/lib/headscale
 install -d -o root -g root -m 0755 /var/lib/headscale/cache
 install -d -o root -g root -m 0755 /var/run/headscale
+# Headscale daemon runs as the `headscale` user (created by the .deb).
+# Its state dir must be owned by that user or the noise key write fails.
+if id -u headscale >/dev/null 2>&1; then
+    chown -R headscale:headscale /var/lib/headscale
+fi
 
 echo "[3/5] installing subterra-admin wrapper + helpers"
 install -o root -g root -m 0755 "${REPO_ROOT}/bin/subterra-admin" \
@@ -161,7 +166,7 @@ install -o root -g root -m 0644 "${REPO_ROOT}/dashboard/app.py" \
 install -d -o root -g root -m 0755 /etc/systemd/system/subterra-dashboard.service.d
 cat > /etc/systemd/system/subterra-dashboard.service.d/allow-cidr.conf <<EOF
 [Service]
-Environment=SUBTERRA_DASHBOARD_ALLOW_CIDRS=${MGMT_CIDR}
+Environment=SUBTERRA_DASHBOARD_ALLOW_CIDRS=${MGMT_CIDR},127.0.0.0/8
 EOF
 
 echo "[5/5] starting headscale + cloudflared + dashboard + timers"
