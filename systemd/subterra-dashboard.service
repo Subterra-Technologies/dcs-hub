@@ -1,0 +1,31 @@
+[Unit]
+Description=Subterra fleet dashboard (LAN-only)
+After=headscale.service network-online.target
+Wants=headscale.service
+
+[Service]
+Type=simple
+User=headscale
+Group=headscale
+Environment=SUBTERRA_DASHBOARD_HOST=0.0.0.0
+Environment=SUBTERRA_DASHBOARD_PORT=8081
+Environment=SUBTERRA_HEADSCALE_BIN=/usr/bin/headscale
+Environment=SUBTERRA_HEADSCALE_CONFIG=/etc/headscale/config.yaml
+ExecStart=/usr/bin/python3 /usr/local/lib/subterra-dashboard/app.py
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=multi-user.target

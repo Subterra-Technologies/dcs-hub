@@ -30,11 +30,17 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 COORDINATOR_HOSTNAME=
 
 # Email for Let's Encrypt registration + cert renewal notices.
+# (Ignored when running behind Cloudflare Tunnel.)
 ACME_EMAIL=
 
 # Ops email(s) that should have group:ops access (comma-separated).
 # Written into headscale/acl.hujson at install time.
 OPS_EMAIL=
+
+# CIDR allowed to SSH into the coordinator + access the LAN-only
+# dashboard at :8081. Typically your DC management network.
+# Example: 10.10.0.0/24
+MGMT_CIDR=
 EOF
     chmod 600 "${ENV_FILE}"
     echo "wrote template ${ENV_FILE}; fill it in and re-run" >&2
@@ -43,7 +49,7 @@ fi
 
 # shellcheck source=/dev/null
 source "${ENV_FILE}"
-for var in COORDINATOR_HOSTNAME ACME_EMAIL OPS_EMAIL; do
+for var in COORDINATOR_HOSTNAME ACME_EMAIL OPS_EMAIL MGMT_CIDR; do
     if [[ -z "${!var:-}" ]]; then
         echo "missing ${var} in ${ENV_FILE}" >&2
         exit 2
@@ -112,33 +118,21 @@ install -o root -g root -m 0755 "${REPO_ROOT}/scripts/backup.sh" \
 install -o root -g root -m 0755 "${REPO_ROOT}/scripts/restore.sh" \
     /usr/local/bin/subterra-restore
 
-echo "[4/5] firewall"
+echo "[4/5] firewall + dashboard install"
 mkdir -p /etc/iptables
-cat > /etc/iptables/rules.v4 <<'EOF'
-*filter
-:INPUT DROP [0:0]
-:FORWARD DROP [0:0]
-:OUTPUT ACCEPT [0:0]
-
--A INPUT -i lo -j ACCEPT
--A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A INPUT -m conntrack --ctstate INVALID -j DROP
-
-# Headscale needs public inbound on 80 (ACME HTTP-01) + 443 (API/DERP).
--A INPUT -p tcp --dport 80  -j ACCEPT
--A INPUT -p tcp --dport 443 -j ACCEPT
-
--A INPUT -p tcp --dport 22 -j ACCEPT
--A INPUT -p icmp -j ACCEPT
-
-COMMIT
-EOF
+sed "s|__MGMT_CIDR__|${MGMT_CIDR}|g" \
+    "${REPO_ROOT}/firewall/iptables.rules" > /etc/iptables/rules.v4
 chmod 0600 /etc/iptables/rules.v4
 iptables-restore < /etc/iptables/rules.v4
 
-echo "[5/5] starting headscale + timers"
+install -d -o root -g root -m 0755 /usr/local/lib/subterra-dashboard
+install -o root -g root -m 0644 "${REPO_ROOT}/dashboard/app.py" \
+    /usr/local/lib/subterra-dashboard/app.py
+
+echo "[5/5] starting headscale + dashboard + timers"
 for unit in subterra-cert-check.service subterra-cert-check.timer \
-            subterra-backup.service subterra-backup.timer; do
+            subterra-backup.service subterra-backup.timer \
+            subterra-dashboard.service; do
     install -o root -g root -m 0644 "${REPO_ROOT}/systemd/${unit}" \
         "/etc/systemd/system/${unit}"
 done
@@ -148,6 +142,7 @@ systemctl enable --now headscale.service
 systemctl enable --now netfilter-persistent.service
 systemctl enable --now subterra-cert-check.timer
 systemctl enable --now subterra-backup.timer
+systemctl enable --now subterra-dashboard.service
 
 sleep 3
 if systemctl is-active --quiet headscale.service; then
