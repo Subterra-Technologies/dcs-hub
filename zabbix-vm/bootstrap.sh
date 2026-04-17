@@ -40,12 +40,10 @@ done
 echo "[1/3] installing tailscale"
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v tailscale >/dev/null 2>&1; then
-    curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg \
-        | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-    curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list \
-        | tee /etc/apt/sources.list.d/tailscale.list >/dev/null
-    apt-get update -qq
-    apt-get install -y -qq tailscale
+    # Tailscale's official installer auto-detects the distro
+    # (Debian, Ubuntu, RHEL, CentOS, Arch, Alpine, etc.) and sets up
+    # the right apt/yum/pacman repo + installs the package.
+    curl -fsSL https://tailscale.com/install.sh | sh
 fi
 
 echo "[2/3] setting hostname (if requested)"

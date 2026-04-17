@@ -86,13 +86,25 @@ fi
 
 if ! command -v cloudflared >/dev/null 2>&1; then
     echo "installing cloudflared from Cloudflare's apt repo"
+    # Pick the apt suite matching this distro. Cloudflare publishes for
+    # bookworm, bullseye, buster (Debian) and jammy, noble, focal (Ubuntu).
+    # Read VERSION_CODENAME from /etc/os-release; fall back to bookworm
+    # since Cloudflare's .debs are broadly forward-compatible.
+    # shellcheck source=/dev/null
+    . /etc/os-release
+    CF_SUITE="${VERSION_CODENAME:-bookworm}"
     curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
         > /usr/share/keyrings/cloudflare-main.gpg
-    cat > /etc/apt/sources.list.d/cloudflared.list <<'EOF'
-deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared bookworm main
+    cat > /etc/apt/sources.list.d/cloudflared.list <<EOF
+deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared ${CF_SUITE} main
 EOF
-    apt-get update -qq
-    apt-get install -y -qq cloudflared
+    apt-get update -qq || true
+    if ! apt-get install -y -qq cloudflared 2>/dev/null; then
+        echo "cloudflared install failed for suite '${CF_SUITE}'; falling back to bookworm"
+        sed -i "s| ${CF_SUITE} main| bookworm main|" /etc/apt/sources.list.d/cloudflared.list
+        apt-get update -qq
+        apt-get install -y -qq cloudflared
+    fi
 fi
 
 echo "[2/5] writing config + ACL"
