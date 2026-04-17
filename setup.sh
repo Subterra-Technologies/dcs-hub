@@ -25,13 +25,16 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 # Subterra Headscale coordinator config.
 # Fill these in and re-run setup.sh.
 
-# Public hostname for the Headscale server. Must resolve to this VM.
-# Nodes will register against https://<this>.
+# Public hostname for the Headscale server. Point this at your Cloudflare
+# Tunnel's public hostname (e.g. hub.subterra.one). Cloudflare handles TLS.
 COORDINATOR_HOSTNAME=
 
-# Email for Let's Encrypt registration + cert renewal notices.
-# (Ignored when running behind Cloudflare Tunnel.)
-ACME_EMAIL=
+# Cloudflare Tunnel token. Create a tunnel in Cloudflare Zero Trust
+# (Networks -> Tunnels -> Create tunnel -> Cloudflared), paste the token
+# here. In the Public Hostnames tab of that tunnel, add:
+#   Subdomain: <hub>        Domain: <yourdomain>
+#   Service:   HTTP          URL: localhost:8080
+CLOUDFLARE_TUNNEL_TOKEN=
 
 # Ops email(s) that should have group:ops access (comma-separated).
 # Written into headscale/acl.hujson at install time.
@@ -49,7 +52,7 @@ fi
 
 # shellcheck source=/dev/null
 source "${ENV_FILE}"
-for var in COORDINATOR_HOSTNAME ACME_EMAIL OPS_EMAIL MGMT_CIDR; do
+for var in COORDINATOR_HOSTNAME CLOUDFLARE_TUNNEL_TOKEN OPS_EMAIL MGMT_CIDR; do
     if [[ -z "${!var:-}" ]]; then
         echo "missing ${var} in ${ENV_FILE}" >&2
         exit 2
@@ -78,11 +81,21 @@ if ! command -v headscale >/dev/null 2>&1; then
     rm -rf "${tmp}"
 fi
 
+if ! command -v cloudflared >/dev/null 2>&1; then
+    echo "installing cloudflared from Cloudflare's apt repo"
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+        > /usr/share/keyrings/cloudflare-main.gpg
+    cat > /etc/apt/sources.list.d/cloudflared.list <<'EOF'
+deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared bookworm main
+EOF
+    apt-get update -qq
+    apt-get install -y -qq cloudflared
+fi
+
 echo "[2/5] writing config + ACL"
 install -d -o root -g root -m 0755 /etc/headscale
 sed \
     -e "s|{{HOSTNAME}}|${COORDINATOR_HOSTNAME}|g" \
-    -e "s|{{ACME_EMAIL}}|${ACME_EMAIL}|g" \
     "${REPO_ROOT}/headscale/config.yaml" > /etc/headscale/config.yaml
 
 # Rewrite acl.hujson so group:ops contains the configured OPS_EMAIL(s).
@@ -129,7 +142,7 @@ install -d -o root -g root -m 0755 /usr/local/lib/subterra-dashboard
 install -o root -g root -m 0644 "${REPO_ROOT}/dashboard/app.py" \
     /usr/local/lib/subterra-dashboard/app.py
 
-echo "[5/5] starting headscale + dashboard + timers"
+echo "[5/5] starting headscale + cloudflared + dashboard + timers"
 for unit in subterra-cert-check.service subterra-cert-check.timer \
             subterra-backup.service subterra-backup.timer \
             subterra-dashboard.service; do
@@ -143,6 +156,14 @@ systemctl enable --now netfilter-persistent.service
 systemctl enable --now subterra-cert-check.timer
 systemctl enable --now subterra-backup.timer
 systemctl enable --now subterra-dashboard.service
+
+# cloudflared ships its own `service install <TOKEN>` that writes and
+# starts the systemd unit. Re-install (idempotent) so token changes apply.
+if systemctl is-active --quiet cloudflared.service; then
+    echo "cloudflared already running; uninstalling old service before re-install"
+    cloudflared service uninstall 2>/dev/null || true
+fi
+cloudflared service install "${CLOUDFLARE_TUNNEL_TOKEN}"
 
 sleep 3
 if systemctl is-active --quiet headscale.service; then

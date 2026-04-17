@@ -11,14 +11,11 @@
 -A INPUT -s __MGMT_CIDR__ -p tcp --dport 22   -j ACCEPT
 -A INPUT -s __MGMT_CIDR__ -p tcp --dport 8081 -j ACCEPT
 
-# Headscale public API + ACME HTTP-01 challenge.
-# (Remove 80/443 when running behind Cloudflare Tunnel — see task #28.)
--A INPUT -p tcp --dport 80  -j ACCEPT
--A INPUT -p tcp --dport 443 -j ACCEPT
-
 -A INPUT -p icmp -j ACCEPT
 
-# Coordinator does not route traffic between schools and Zabbix VMs.
-# Each Zabbix VM runs its own Tailscale tunnel directly to its paired Pi.
+# No public inbound ports: cloudflared dials OUT to Cloudflare edge and
+# handles TLS termination at Cloudflare. Headscale listens on 127.0.0.1:8080.
+# If you ever run without Cloudflare Tunnel, open TCP/80 + TCP/443 here
+# and restore tls_letsencrypt_* in headscale/config.yaml.
 
 COMMIT

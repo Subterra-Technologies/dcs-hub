@@ -1,20 +1,22 @@
-# Headscale server config. Rendered by setup.sh with {{HOSTNAME}} substituted.
-# Source of truth docs: https://github.com/juanfont/headscale
+# Headscale server config. Rendered by setup.sh.
+#
+# Exposed to the internet via Cloudflare Tunnel; Cloudflare terminates TLS
+# at its edge with its own cert. Headscale itself serves plain HTTP on
+# loopback. No direct public port on this VM.
 
 server_url: https://{{HOSTNAME}}
-listen_addr: 0.0.0.0:443
+listen_addr: 127.0.0.1:8080
 metrics_listen_addr: 127.0.0.1:9090
 grpc_listen_addr: 127.0.0.1:50443
-grpc_allow_insecure: false
+grpc_allow_insecure: true
 
-# Tailnet overlay address pools. Clients get IPs from here.
 prefixes:
   v4: 100.64.0.0/10
   v6: fd7a:115c:a1e0::/48
   allocation: sequential
 
-# DERP relays. Using Tailscale's public DERP mesh is fine — traffic is
-# end-to-end encrypted; DERP only ferries UDP-over-TCP when direct fails.
+# Tailscale's public DERP mesh. Fallback relay when direct UDP fails.
+# Traffic is end-to-end encrypted; DERP only carries ciphertext.
 derp:
   urls:
     - https://controlplane.tailscale.com/derpmap/default
@@ -24,23 +26,16 @@ derp:
 disable_check_updates: false
 ephemeral_node_inactivity_timeout: 30m
 
-# SQLite by default. Fine for < 1000 nodes.
 database:
   type: sqlite
   sqlite:
     path: /var/lib/headscale/db.sqlite
 
-# Built-in Let's Encrypt. Requires ports 80+443 reachable from the internet
-# and DNS for {{HOSTNAME}} resolving to this host.
-acme_url: https://acme-v02.api.letsencrypt.org/directory
-acme_email: {{ACME_EMAIL}}
-tls_letsencrypt_hostname: {{HOSTNAME}}
-tls_letsencrypt_cache_dir: /var/lib/headscale/cache
-tls_letsencrypt_challenge_type: HTTP-01
-tls_letsencrypt_listen: ":80"
+# TLS disabled — Cloudflare handles it. Headscale speaks HTTP to cloudflared,
+# cloudflared speaks HTTPS to Cloudflare edge, client gets Cloudflare cert.
+# (If you ever run without CF tunnel, restore tls_letsencrypt_* here.)
 
-# Pre-auth key default expiration if caller does not override.
-pre_auth_key_default_duration: 336h  # 14 days
+pre_auth_key_default_duration: 72h  # 3 days; tighter than default
 
 log:
   level: info
@@ -50,7 +45,6 @@ policy:
   mode: file
   path: /etc/headscale/acl.hujson
 
-# Allow Pis to advertise subnet routes; ops approves via subterra-admin.
 dns:
   magic_dns: true
   base_domain: subterra.internal
