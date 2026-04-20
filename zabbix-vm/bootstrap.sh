@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Bootstrap a Zabbix VM onto the Subterra tailnet.
 #
+# Defaults to Tailscale SaaS (no --login-server). Pass --login-server
+# only when dialing a self-hosted Headscale.
+#
 # Prereqs:
-#   - Debian 12+ VM, reachable out to the coordinator hostname over HTTPS 443.
-#   - Pre-auth key from the coordinator:
-#       subterra-admin issue-token <district> zabbix
+#   - Linux VM, outbound HTTPS/UDP to the internet.
+#   - Pre-auth key tagged tag:zabbix-<district> (generated in the
+#     Tailscale admin console → Settings → Keys).
 #
 # Usage:
 #   sudo bootstrap.sh \
-#       --coordinator https://hub.subterra.one \
 #       --authkey tskey-auth-xxxxxxxxxxxxxxxx \
-#       --hostname zabbix-oakridge-a \
-#       [--advertise-routes 10.10.99.0/28]
+#       --hostname zabbix-oakridge-a
+#   [--login-server https://hub.example.com]  # only for self-hosted Headscale
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -19,14 +21,14 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-COORDINATOR=""
+LOGIN_SERVER=""
 AUTHKEY=""
 HOSTNAME_NEW=""
 ADVERTISE_ROUTES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --coordinator) COORDINATOR="$2"; shift 2 ;;
+        --login-server|--coordinator) LOGIN_SERVER="$2"; shift 2 ;;
         --authkey) AUTHKEY="$2"; shift 2 ;;
         --hostname) HOSTNAME_NEW="$2"; shift 2 ;;
         --advertise-routes) ADVERTISE_ROUTES="$2"; shift 2 ;;
@@ -34,8 +36,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "${COORDINATOR}" ]] || { echo "--coordinator required" >&2; exit 2; }
-[[ -n "${AUTHKEY}" ]]     || { echo "--authkey required" >&2; exit 2; }
+[[ -n "${AUTHKEY}" ]] || { echo "--authkey required" >&2; exit 2; }
 
 echo "[1/3] installing tailscale"
 export DEBIAN_FRONTEND=noninteractive
@@ -54,13 +55,15 @@ fi
 echo "[3/3] joining tailnet"
 args=(
     up
-    --login-server "${COORDINATOR}"
     --authkey "${AUTHKEY}"
     --ssh
     --accept-routes
     --accept-dns=false
     --reset
 )
+if [[ -n "${LOGIN_SERVER}" ]]; then
+    args+=(--login-server "${LOGIN_SERVER}")
+fi
 if [[ -n "${HOSTNAME_NEW}" ]]; then
     args+=(--hostname "${HOSTNAME_NEW}")
 fi
@@ -75,5 +78,4 @@ echo "Joined tailnet. Status:"
 tailscale status --peers=false
 echo
 echo "This Zabbix VM now routes district traffic via the Pi in its district."
-echo "Ask the coordinator admin to approve any advertised routes with:"
-echo "  subterra-admin routes <district>"
+echo "Ask the tailnet admin to verify advertised routes are approved."
