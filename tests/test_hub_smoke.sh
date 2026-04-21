@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hub smoke test: run headscale in a /tmp sandbox and exercise subterra-admin.
+# Hub smoke test: run headscale in a /tmp sandbox and exercise detel-admin.
 #
 # Does not require root or system install. Uses a downloaded headscale binary
 # cached at /tmp/headscale-smoke/headscale. Runs in plain HTTP on loopback.
@@ -49,7 +49,7 @@ policy:
   path: /tmp/headscale-smoke/acl.hujson
 dns:
   magic_dns: true
-  base_domain: subterra.test
+  base_domain: detel.test
   nameservers:
     global:
       - 1.1.1.1
@@ -75,49 +75,49 @@ if [[ ! -S "${SANDBOX}/headscale.sock" ]]; then
     exit 1
 fi
 
-# Run subterra-admin against our local headscale.
+# Run detel-admin against our local headscale.
 export HEADSCALE="${SANDBOX}/headscale -c ${SANDBOX}/config.yaml"
-SUBTERRA="${HERE}/bin/subterra-admin"
+DETEL="${HERE}/bin/detel-admin"
 
 echo "[1] add-district"
-"${SUBTERRA}" add-district oakridge >/dev/null
+"${DETEL}" add-district oakridge >/dev/null
 
 echo "[2] list-districts"
-out="$("${SUBTERRA}" list-districts)"
+out="$("${DETEL}" list-districts)"
 grep -q oakridge <<<"${out}" || { echo "FAIL: district not listed"; exit 1; }
 
 echo "[3] issue-token pi"
-key1="$("${SUBTERRA}" issue-token oakridge pi --expiration 1h | tail -1)"
+key1="$("${DETEL}" issue-token oakridge pi --expiration 1h | tail -1)"
 [[ "${key1}" =~ ^hskey-auth- ]] || { echo "FAIL: pi key shape bad: ${key1}"; exit 1; }
 
 echo "[4] issue-token zabbix"
-key2="$("${SUBTERRA}" issue-token oakridge zabbix | tail -1)"
+key2="$("${DETEL}" issue-token oakridge zabbix | tail -1)"
 [[ "${key2}" =~ ^hskey-auth- ]] || { echo "FAIL: zabbix key shape bad: ${key2}"; exit 1; }
 [[ "${key1}" != "${key2}" ]] || { echo "FAIL: two calls returned same key"; exit 1; }
 
 echo "[5] issue-token for unknown district rejects"
-if "${SUBTERRA}" issue-token ghost pi 2>/dev/null; then
+if "${DETEL}" issue-token ghost pi 2>/dev/null; then
     echo "FAIL: expected error on unknown district"; exit 1
 fi
 
 echo "[6] second district allocates independently"
-"${SUBTERRA}" add-district lincoln >/dev/null
-key3="$("${SUBTERRA}" issue-token lincoln pi | tail -1)"
+"${DETEL}" add-district lincoln >/dev/null
+key3="$("${DETEL}" issue-token lincoln pi | tail -1)"
 [[ "${key3}" =~ ^hskey-auth- ]] || { echo "FAIL: lincoln key shape bad"; exit 1; }
 
 echo "[7] list-nodes filter"
 # No nodes yet, but command should run without error
-"${SUBTERRA}" list-nodes oakridge >/dev/null
+"${DETEL}" list-nodes oakridge >/dev/null
 
 echo "[8] policy-reload (re-applies our ACL file without restart)"
-"${SUBTERRA}" policy-reload >/dev/null 2>&1 || {
+"${DETEL}" policy-reload >/dev/null 2>&1 || {
     # v0.28 headscale may not support policy-reload; that's fine — policy
     # mode=file reloads on SIGHUP. Warn, do not fail.
     echo "  (policy-reload skipped: may not be supported in this headscale)"
 }
 
 echo "[9] keys list shows outstanding unclaimed keys"
-out="$("${SUBTERRA}" keys list)"
+out="$("${DETEL}" keys list)"
 # We issued keys for oakridge (pi+zabbix) and lincoln (pi). All three
 # should be outstanding (unused).
 grep -qc oakridge <<<"${out}" || { echo "FAIL: no oakridge keys in listing"; exit 1; }
@@ -126,7 +126,7 @@ count=$(grep -cE '^(oakridge|lincoln) ' <<<"${out}" || true)
 [[ "${count}" -ge 3 ]] || { echo "FAIL: expected >=3 outstanding keys, got ${count}"; exit 1; }
 
 echo "[10] keys list filter by district"
-out_oak="$("${SUBTERRA}" keys list oakridge)"
+out_oak="$("${DETEL}" keys list oakridge)"
 grep -q lincoln <<<"${out_oak}" && { echo "FAIL: lincoln leaked into oakridge filter"; exit 1; }
 grep -q oakridge <<<"${out_oak}" || { echo "FAIL: oakridge missing from its own filter"; exit 1; }
 

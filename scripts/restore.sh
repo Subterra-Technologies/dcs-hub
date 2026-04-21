@@ -14,9 +14,9 @@
 #   6. Run a sanity check (`headscale users list`).
 set -euo pipefail
 
-SKIP_SYSTEMCTL="${SUBTERRA_SKIP_SYSTEMCTL:-0}"
+SKIP_SYSTEMCTL="${DETEL_SKIP_SYSTEMCTL:-0}"
 if [[ $EUID -ne 0 && "${SKIP_SYSTEMCTL}" != "1" ]]; then
-    echo "restore.sh must run as root (or set SUBTERRA_SKIP_SYSTEMCTL=1 for test)" >&2
+    echo "restore.sh must run as root (or set DETEL_SKIP_SYSTEMCTL=1 for test)" >&2
     exit 1
 fi
 
@@ -29,9 +29,9 @@ fi
 BACKUP_DIR="${1:?backup directory path required}"
 [[ -d "${BACKUP_DIR}" ]] || { echo "no such directory: ${BACKUP_DIR}" >&2; exit 2; }
 
-HEADSCALE_STATE="${SUBTERRA_HEADSCALE_STATE:-/var/lib/headscale}"
-HEADSCALE_ETC="${SUBTERRA_HEADSCALE_ETC:-/etc/headscale}"
-HEADSCALE_USER="${SUBTERRA_HEADSCALE_USER:-headscale}"
+HEADSCALE_STATE="${DETEL_HEADSCALE_STATE:-/var/lib/headscale}"
+HEADSCALE_ETC="${DETEL_HEADSCALE_ETC:-/etc/headscale}"
+HEADSCALE_USER="${DETEL_HEADSCALE_USER:-headscale}"
 
 if [[ -f "${HEADSCALE_STATE}/db.sqlite" && ${FORCE} -ne 1 ]]; then
     echo "existing db at ${HEADSCALE_STATE}/db.sqlite — refusing to clobber." >&2

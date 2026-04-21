@@ -1,9 +1,0 @@
-[Unit]
-Description=Subterra coordinator nightly backup
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/subterra-backup
-EnvironmentFile=-/etc/subterra-hub/backup.env
-StandardOutput=journal
-StandardError=journal

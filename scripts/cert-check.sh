@@ -16,16 +16,16 @@
 #   2 — cert check failed entirely (endpoint unreachable, cert invalid)
 set -euo pipefail
 
-ENV_FILE="${SUBTERRA_ENV_FILE:-/etc/subterra-hub/setup.env}"
-WARN_DAYS="${SUBTERRA_CERT_WARN_DAYS:-14}"
+ENV_FILE="${DETEL_ENV_FILE:-/etc/detel-hub/setup.env}"
+WARN_DAYS="${DETEL_CERT_WARN_DAYS:-14}"
 
 if [[ -f "${ENV_FILE}" ]]; then
     # shellcheck source=/dev/null
     source "${ENV_FILE}"
 fi
 
-HOST="${SUBTERRA_CERT_HOST:-${COORDINATOR_HOSTNAME:-}}"
-[[ -n "${HOST}" ]] || { echo "cert-check: no hostname (SUBTERRA_CERT_HOST or COORDINATOR_HOSTNAME)" >&2; exit 2; }
+HOST="${DETEL_CERT_HOST:-${COORDINATOR_HOSTNAME:-}}"
+[[ -n "${HOST}" ]] || { echo "cert-check: no hostname (DETEL_CERT_HOST or COORDINATOR_HOSTNAME)" >&2; exit 2; }
 
 expiry_line="$(echo | openssl s_client -connect "${HOST}:443" -servername "${HOST}" \
                   -verify_return_error 2>/dev/null \

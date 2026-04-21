@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision a fresh Debian 12+ VM as the Subterra Headscale coordinator.
+# Provision a fresh Debian 12+ VM as the Detel Headscale coordinator.
 #
 # Installs Headscale + cloudflared + the fleet dashboard + backup and
 # cert-check timers. Idempotent; safe to re-run.
@@ -19,17 +19,17 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE=/etc/subterra-hub/setup.env
+ENV_FILE=/etc/detel-hub/setup.env
 HEADSCALE_VERSION="${HEADSCALE_VERSION:-0.28.0}"
 
 mkdir -p "$(dirname "${ENV_FILE}")"
 if [[ ! -f "${ENV_FILE}" ]]; then
     cat > "${ENV_FILE}" <<'EOF'
-# Subterra Headscale coordinator config.
+# Detel Headscale coordinator config.
 # Fill these in and re-run setup.sh.
 
 # Public hostname for the Headscale server. Point this at your Cloudflare
-# Tunnel's public hostname (e.g. hub.subterra.one). Cloudflare handles TLS.
+# Tunnel's public hostname (e.g. hub.detel.one). Cloudflare handles TLS.
 COORDINATOR_HOSTNAME=
 
 # Cloudflare Tunnel token. Create a tunnel in Cloudflare Zero Trust
@@ -129,7 +129,7 @@ ops_array="$(
         fi
     done
 )"
-sed "s|\"noah@subterratechnologies\\.com\"|${ops_array}|" \
+sed "s|\"noah@deteltechnologies\\.com\"|${ops_array}|" \
     "${REPO_ROOT}/headscale/acl.hujson" > /etc/headscale/acl.hujson
 
 install -d -o root -g root -m 0755 /var/lib/headscale
@@ -141,15 +141,15 @@ if id -u headscale >/dev/null 2>&1; then
     chown -R headscale:headscale /var/lib/headscale
 fi
 
-echo "[3/5] installing subterra-admin wrapper + helpers"
-install -o root -g root -m 0755 "${REPO_ROOT}/bin/subterra-admin" \
-    /usr/local/bin/subterra-admin
+echo "[3/5] installing detel-admin wrapper + helpers"
+install -o root -g root -m 0755 "${REPO_ROOT}/bin/detel-admin" \
+    /usr/local/bin/detel-admin
 install -o root -g root -m 0755 "${REPO_ROOT}/scripts/cert-check.sh" \
-    /usr/local/bin/subterra-cert-check
+    /usr/local/bin/detel-cert-check
 install -o root -g root -m 0755 "${REPO_ROOT}/scripts/backup.sh" \
-    /usr/local/bin/subterra-backup
+    /usr/local/bin/detel-backup
 install -o root -g root -m 0755 "${REPO_ROOT}/scripts/restore.sh" \
-    /usr/local/bin/subterra-restore
+    /usr/local/bin/detel-restore
 
 echo "[4/5] firewall + dashboard install"
 mkdir -p /etc/iptables
@@ -158,31 +158,31 @@ sed "s|__MGMT_CIDR__|${MGMT_CIDR}|g" \
 chmod 0600 /etc/iptables/rules.v4
 iptables-restore < /etc/iptables/rules.v4
 
-install -d -o root -g root -m 0755 /usr/local/lib/subterra-dashboard
+install -d -o root -g root -m 0755 /usr/local/lib/detel-dashboard
 install -o root -g root -m 0644 "${REPO_ROOT}/dashboard/app.py" \
-    /usr/local/lib/subterra-dashboard/app.py
+    /usr/local/lib/detel-dashboard/app.py
 
 # App-level allowlist matching the iptables MGMT_CIDR rule (defense in depth).
-install -d -o root -g root -m 0755 /etc/systemd/system/subterra-dashboard.service.d
-cat > /etc/systemd/system/subterra-dashboard.service.d/allow-cidr.conf <<EOF
+install -d -o root -g root -m 0755 /etc/systemd/system/detel-dashboard.service.d
+cat > /etc/systemd/system/detel-dashboard.service.d/allow-cidr.conf <<EOF
 [Service]
-Environment=SUBTERRA_DASHBOARD_ALLOW_CIDRS=${MGMT_CIDR},127.0.0.0/8
+Environment=DETEL_DASHBOARD_ALLOW_CIDRS=${MGMT_CIDR},127.0.0.0/8
 EOF
 
 echo "[5/5] starting headscale + cloudflared + dashboard + timers"
-for unit in subterra-cert-check.service subterra-cert-check.timer \
-            subterra-backup.service subterra-backup.timer \
-            subterra-dashboard.service; do
+for unit in detel-cert-check.service detel-cert-check.timer \
+            detel-backup.service detel-backup.timer \
+            detel-dashboard.service; do
     install -o root -g root -m 0644 "${REPO_ROOT}/systemd/${unit}" \
         "/etc/systemd/system/${unit}"
 done
-install -d -o root -g root -m 0700 /var/backups/subterra-hub
+install -d -o root -g root -m 0700 /var/backups/detel-hub
 systemctl daemon-reload
 systemctl enable --now headscale.service
 systemctl enable --now netfilter-persistent.service
-systemctl enable --now subterra-cert-check.timer
-systemctl enable --now subterra-backup.timer
-systemctl enable --now subterra-dashboard.service
+systemctl enable --now detel-cert-check.timer
+systemctl enable --now detel-backup.timer
+systemctl enable --now detel-dashboard.service
 
 # cloudflared ships its own `service install <TOKEN>` that writes and
 # starts the systemd unit. Re-install (idempotent) so token changes apply.
@@ -196,7 +196,7 @@ sleep 3
 if systemctl is-active --quiet headscale.service; then
     echo
     echo "Coordinator up at https://${COORDINATOR_HOSTNAME}"
-    echo "Next: sudo subterra-admin add-district <slug>"
+    echo "Next: sudo detel-admin add-district <slug>"
 else
     echo "headscale.service failed to start; journalctl -u headscale -e" >&2
     exit 3

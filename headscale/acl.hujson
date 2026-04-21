@@ -1,4 +1,4 @@
-// Subterra fleet ACL policy.
+// Detel fleet ACL policy.
 //
 // Model:
 //   - One Headscale USER per school district (user name = district slug).
@@ -14,7 +14,7 @@
       // Email identities allowed to operate the fleet. Add more as needed.
       // Use email addresses recognized by your OIDC provider if you wire
       // one up, or Headscale usernames if using local auth.
-      "noah@subterratechnologies.com"
+      "noah@deteltechnologies.com"
     ]
   },
 
@@ -55,13 +55,13 @@
 
   "ssh": [
     // tailscale ssh: ops can SSH to any pi or zabbix node as the non-root
-    // maintenance user "subterra". No public-key distribution needed —
+    // maintenance user "detel". No public-key distribution needed —
     // Tailscale issues short-lived SSH certs gated by this ACL.
     {
       "action": "accept",
       "src":    ["group:ops"],
       "dst":    ["tag:pi", "tag:zabbix"],
-      "users":  ["subterra", "root"]
+      "users":  ["detel", "root"]
     }
   ]
 }

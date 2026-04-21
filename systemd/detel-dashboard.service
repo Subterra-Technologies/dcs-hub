@@ -1,5 +1,5 @@
 [Unit]
-Description=Subterra fleet dashboard (LAN-only)
+Description=Detel fleet dashboard (LAN-only)
 After=headscale.service network-online.target
 Wants=headscale.service
 
@@ -7,11 +7,11 @@ Wants=headscale.service
 Type=simple
 User=headscale
 Group=headscale
-Environment=SUBTERRA_DASHBOARD_HOST=0.0.0.0
-Environment=SUBTERRA_DASHBOARD_PORT=8081
-Environment=SUBTERRA_HEADSCALE_BIN=/usr/bin/headscale
-Environment=SUBTERRA_HEADSCALE_CONFIG=/etc/headscale/config.yaml
-ExecStart=/usr/bin/python3 /usr/local/lib/subterra-dashboard/app.py
+Environment=DETEL_DASHBOARD_HOST=0.0.0.0
+Environment=DETEL_DASHBOARD_PORT=8081
+Environment=DETEL_HEADSCALE_BIN=/usr/bin/headscale
+Environment=DETEL_HEADSCALE_CONFIG=/etc/headscale/config.yaml
+ExecStart=/usr/bin/python3 /usr/local/lib/detel-dashboard/app.py
 Restart=on-failure
 RestartSec=5
 

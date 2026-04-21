@@ -4,7 +4,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SANDBOX=/tmp/subterra-dashboard-test
+SANDBOX=/tmp/detel-dashboard-test
 HS_VERSION=0.28.0
 
 rm -rf "${SANDBOX}"
@@ -41,7 +41,7 @@ log: {level: warn, format: text}
 policy: {mode: file, path: ${SANDBOX}/etc/acl.hujson}
 dns:
   magic_dns: true
-  base_domain: subterra.test
+  base_domain: detel.test
   nameservers: {global: [1.1.1.1]}
 unix_socket: ${SANDBOX}/headscale.sock
 unix_socket_permission: "0770"
@@ -67,11 +67,11 @@ ${HS} preauthkeys create --user "${uid}" --expiration 3d --tags tag:zabbix >/dev
 # Find a free port
 PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1]);s.close()')"
 
-SUBTERRA_HEADSCALE_BIN="${HSBIN}" \
-SUBTERRA_HEADSCALE_CONFIG="${SANDBOX}/etc/config.yaml" \
-SUBTERRA_DASHBOARD_HOST=127.0.0.1 \
-SUBTERRA_DASHBOARD_PORT="${PORT}" \
-SUBTERRA_DASHBOARD_CACHE_SEC=0 \
+DETEL_HEADSCALE_BIN="${HSBIN}" \
+DETEL_HEADSCALE_CONFIG="${SANDBOX}/etc/config.yaml" \
+DETEL_DASHBOARD_HOST=127.0.0.1 \
+DETEL_DASHBOARD_PORT="${PORT}" \
+DETEL_DASHBOARD_CACHE_SEC=0 \
     python3 "${HERE}/dashboard/app.py" >"${SANDBOX}/dash.log" 2>&1 &
 DASH_PID=$!
 
@@ -111,12 +111,12 @@ echo "[5] CIDR allowlist denies non-allowlisted source"
 kill "${DASH_PID}" 2>/dev/null || true
 wait "${DASH_PID}" 2>/dev/null || true
 PORT2="$(python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.getsockname()[1]);s.close()')"
-SUBTERRA_HEADSCALE_BIN="${HSBIN}" \
-SUBTERRA_HEADSCALE_CONFIG="${SANDBOX}/etc/config.yaml" \
-SUBTERRA_DASHBOARD_HOST=127.0.0.1 \
-SUBTERRA_DASHBOARD_PORT="${PORT2}" \
-SUBTERRA_DASHBOARD_CACHE_SEC=0 \
-SUBTERRA_DASHBOARD_ALLOW_CIDRS=203.0.113.0/24 \
+DETEL_HEADSCALE_BIN="${HSBIN}" \
+DETEL_HEADSCALE_CONFIG="${SANDBOX}/etc/config.yaml" \
+DETEL_DASHBOARD_HOST=127.0.0.1 \
+DETEL_DASHBOARD_PORT="${PORT2}" \
+DETEL_DASHBOARD_CACHE_SEC=0 \
+DETEL_DASHBOARD_ALLOW_CIDRS=203.0.113.0/24 \
     python3 "${HERE}/dashboard/app.py" >"${SANDBOX}/dash2.log" 2>&1 &
 DASH_PID=$!
 for _ in $(seq 1 20); do

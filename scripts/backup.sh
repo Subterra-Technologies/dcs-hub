@@ -12,11 +12,11 @@
 #   - acl.hujson  — live policy
 set -euo pipefail
 
-BACKUP_DIR="${SUBTERRA_BACKUP_DIR:-/var/backups/subterra-hub}"
-RETENTION="${SUBTERRA_BACKUP_RETENTION:-14}"
-HEADSCALE_STATE="${SUBTERRA_HEADSCALE_STATE:-/var/lib/headscale}"
-HEADSCALE_ETC="${SUBTERRA_HEADSCALE_ETC:-/etc/headscale}"
-BACKUP_REMOTE="${SUBTERRA_BACKUP_REMOTE:-}"
+BACKUP_DIR="${DETEL_BACKUP_DIR:-/var/backups/detel-hub}"
+RETENTION="${DETEL_BACKUP_RETENTION:-14}"
+HEADSCALE_STATE="${DETEL_HEADSCALE_STATE:-/var/lib/headscale}"
+HEADSCALE_ETC="${DETEL_HEADSCALE_ETC:-/etc/headscale}"
+BACKUP_REMOTE="${DETEL_BACKUP_REMOTE:-}"
 
 mkdir -p "${BACKUP_DIR}"
 chmod 0700 "${BACKUP_DIR}"

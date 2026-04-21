@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily check of Subterra coordinator TLS cert expiry
+Description=Daily check of Detel coordinator TLS cert expiry
 
 [Timer]
 OnCalendar=daily

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap a Zabbix VM onto the Subterra tailnet.
+# Bootstrap a Zabbix VM onto the Detel tailnet.
 #
 # Defaults to Tailscale SaaS (no --login-server). Pass --login-server
 # only when dialing a self-hosted Headscale.

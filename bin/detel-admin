@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Thin wrapper around `headscale` for Subterra's daily fleet ops.
+# Thin wrapper around `headscale` for Detel's daily fleet ops.
 #
 # Conventions:
 #   - Every school district maps to one Headscale "user". The district
@@ -14,7 +14,7 @@ shift || true
 
 usage() {
     cat <<EOF
-usage: subterra-admin <command> [args]
+usage: detel-admin <command> [args]
 
   add-district <slug>
       Create a Headscale user for a new school district.
@@ -24,7 +24,7 @@ usage: subterra-admin <command> [args]
 
   issue-token <district> <pi|zabbix> [--expiration 3d] [--ephemeral]
       Generate a pre-auth key for a new node. Prints the raw key to stdout.
-      Give this key to the Pi (in /boot/firmware/subterra-enroll.json) or
+      Give this key to the Pi (in /boot/firmware/detel-enroll.json) or
       to the Zabbix VM at tailscale-up time. Default 3d to keep pre-ship
       NVMes short-lived; pass --expiration 7d etc. for longer windows.
 
@@ -177,7 +177,7 @@ case "${cmd}" in
                 done
                 ;;
             *)
-                echo "usage: subterra-admin keys list [<district>]" >&2
+                echo "usage: detel-admin keys list [<district>]" >&2
                 exit 2
                 ;;
         esac

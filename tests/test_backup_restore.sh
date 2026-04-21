@@ -41,7 +41,7 @@ log: {level: warn, format: text}
 policy: {mode: file, path: ${SANDBOX}/etc/acl.hujson}
 dns:
   magic_dns: true
-  base_domain: subterra.test
+  base_domain: detel.test
   nameservers: {global: [1.1.1.1]}
 unix_socket: ${SANDBOX}/headscale.sock
 unix_socket_permission: "0770"
@@ -77,10 +77,10 @@ before=$(${HS} --output json users list | jq -r '.[].name' | sort | tr '\n' ',')
 echo "  users before: ${before}"
 
 echo "[2] run backup.sh"
-SUBTERRA_BACKUP_DIR="${SANDBOX}/backups" \
-SUBTERRA_BACKUP_RETENTION=7 \
-SUBTERRA_HEADSCALE_STATE="${SANDBOX}/state" \
-SUBTERRA_HEADSCALE_ETC="${SANDBOX}/etc" \
+DETEL_BACKUP_DIR="${SANDBOX}/backups" \
+DETEL_BACKUP_RETENTION=7 \
+DETEL_HEADSCALE_STATE="${SANDBOX}/state" \
+DETEL_HEADSCALE_ETC="${SANDBOX}/etc" \
     "${HERE}/scripts/backup.sh"
 
 snapshot="$(find "${SANDBOX}/backups" -mindepth 1 -maxdepth 1 -type d | head -1)"
@@ -96,9 +96,9 @@ rm -rf "${SANDBOX}/state"
 mkdir -p "${SANDBOX}/state"
 
 echo "[4] run restore.sh"
-SUBTERRA_SKIP_SYSTEMCTL=1 \
-SUBTERRA_HEADSCALE_STATE="${SANDBOX}/state" \
-SUBTERRA_HEADSCALE_ETC="${SANDBOX}/etc" \
+DETEL_SKIP_SYSTEMCTL=1 \
+DETEL_HEADSCALE_STATE="${SANDBOX}/state" \
+DETEL_HEADSCALE_ETC="${SANDBOX}/etc" \
     "${HERE}/scripts/restore.sh" "${snapshot%/}"
 
 [[ -f "${SANDBOX}/state/db.sqlite" ]] || { echo "FAIL: db not restored"; exit 1; }
