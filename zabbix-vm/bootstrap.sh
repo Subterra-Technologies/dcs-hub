@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap a Zabbix VM onto the Detel tailnet.
-#
-# Defaults to Tailscale SaaS (no --login-server). Pass --login-server
-# only when dialing a self-hosted Headscale.
+# Bootstrap a Zabbix VM onto the Detel tailnet (Tailscale SaaS).
 #
 # Prereqs:
 #   - Linux VM, outbound HTTPS/UDP to the internet.
@@ -13,7 +10,6 @@
 #   sudo bootstrap.sh \
 #       --authkey tskey-auth-xxxxxxxxxxxxxxxx \
 #       --hostname zabbix-oakridge-a
-#   [--login-server https://hub.example.com]  # only for self-hosted Headscale
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -21,14 +17,12 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-LOGIN_SERVER=""
 AUTHKEY=""
 HOSTNAME_NEW=""
 ADVERTISE_ROUTES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --login-server|--coordinator) LOGIN_SERVER="$2"; shift 2 ;;
         --authkey) AUTHKEY="$2"; shift 2 ;;
         --hostname) HOSTNAME_NEW="$2"; shift 2 ;;
         --advertise-routes) ADVERTISE_ROUTES="$2"; shift 2 ;;
@@ -61,9 +55,6 @@ args=(
     --accept-dns=false
     --reset
 )
-if [[ -n "${LOGIN_SERVER}" ]]; then
-    args+=(--login-server "${LOGIN_SERVER}")
-fi
 if [[ -n "${HOSTNAME_NEW}" ]]; then
     args+=(--hostname "${HOSTNAME_NEW}")
 fi

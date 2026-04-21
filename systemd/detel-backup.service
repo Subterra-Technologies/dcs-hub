@@ -1,9 +1,0 @@
-[Unit]
-Description=Detel coordinator nightly backup
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/detel-backup
-EnvironmentFile=-/etc/detel-hub/backup.env
-StandardOutput=journal
-StandardError=journal
