@@ -12,7 +12,7 @@
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
-    exec sudo "$0" "$@"
+    exec sudo --preserve-env=SSH_CONNECTION "$0" "$@"
 fi
 
 STATE_DIR=/var/lib/dcs
@@ -124,7 +124,48 @@ cmd_reconfigure() {
     exec /usr/local/sbin/dcs-setup
 }
 
+caller_ssh_connection() {
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+        printf '%s' "${SSH_CONNECTION}"
+        return
+    fi
+    # sudo strips SSH_CONNECTION by default; read our parent's environ.
+    if [[ -r "/proc/$PPID/environ" ]]; then
+        tr '\0' '\n' < "/proc/$PPID/environ" 2>/dev/null \
+            | awk -F= '$1=="SSH_CONNECTION"{print substr($0, length($1)+2); exit}'
+    fi
+}
+
+is_tailscale_session() {
+    local conn server_ip ts_ip4 ts_ip6
+    conn=$(caller_ssh_connection)
+    [[ -n "${conn}" ]] || return 1
+    server_ip=$(awk '{print $3}' <<<"${conn}")
+    ts_ip4=$(tailscale ip -4 2>/dev/null | head -1 || true)
+    ts_ip6=$(tailscale ip -6 2>/dev/null | head -1 || true)
+    [[ -n "${ts_ip4}" && "${server_ip}" == "${ts_ip4}" ]] && return 0
+    [[ -n "${ts_ip6}" && "${server_ip}" == "${ts_ip6}" ]] && return 0
+    return 1
+}
+
 cmd_reset() {
+    local force=0
+    [[ "${1:-}" == "--force" ]] && force=1
+
+    if [[ ${force} -eq 0 ]] && is_tailscale_session; then
+        err "Refusing to reset: you're connected over Tailscale SSH."
+        muted "Reset runs 'tailscale logout', which cuts this session immediately"
+        muted "and wipes local enrollment. You'd need Proxmox/console access to"
+        muted "this VM to re-enroll."
+        echo
+        muted "To swap district/authkey without wiping state, use:"
+        muted "  sudo dcs reconfigure"
+        echo
+        muted "To proceed anyway (you've verified you have another way in):"
+        muted "  sudo dcs reset --force"
+        exit 1
+    fi
+
     err "Reset logs out of the tailnet and wipes local enrollment state."
     gum confirm "Proceed?" || exit 0
     tailscale logout 2>/dev/null || true
@@ -172,6 +213,7 @@ Subcommands:
   logs          recent tailscaled journal entries
   reconfigure   wipe state + re-run dcs-setup
   reset         log out of tailnet + wipe local state
+                (refuses over Tailscale SSH; use 'reset --force' to override)
   help          show this help
 
 With no subcommand, opens an interactive menu.
@@ -183,7 +225,7 @@ case "${1:-menu}" in
     districts)             cmd_districts ;;
     logs)                  cmd_logs ;;
     reconfigure|reconfig)  cmd_reconfigure ;;
-    reset)                 cmd_reset ;;
+    reset)                 shift; cmd_reset "$@" ;;
     menu|'')               cmd_menu ;;
     -h|--help|help)        usage ;;
     *) err "unknown subcommand: $1"; usage; exit 2 ;;
