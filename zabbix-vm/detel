@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# detel: admin TUI for a Zabbix VM on the Detel tailnet.
+#
+# Usage:
+#   detel              interactive menu
+#   detel status       current state summary
+#   detel logs         recent tailscaled journal
+#   detel reconfigure  wipe state + re-run detel-setup (change district)
+#   detel reset        logout + wipe local enrollment state
+#   detel help
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+STATE_DIR=/var/lib/detel
+ENROLL_META="${STATE_DIR}/enrollment.json"
+ENROLL_SENTINEL="${STATE_DIR}/enrolled"
+
+C_BRAND=99
+C_OK=42
+C_WARN=214
+C_ERR=196
+C_MUTED=245
+C_INFO=75
+
+header()  { gum style --border double --border-foreground "${C_BRAND}" --padding "1 3" --margin "1 0" --foreground "${C_BRAND}" --bold "$@"; }
+section() { gum style --foreground "${C_BRAND}" --bold --margin "1 0 0 0" "▸ $*"; }
+ok()      { gum style --foreground "${C_OK}"    "✓ $*"; }
+warn()    { gum style --foreground "${C_WARN}"  "⚠ $*"; }
+err()     { gum style --foreground "${C_ERR}"   "✗ $*"; }
+muted()   { gum style --foreground "${C_MUTED}" "$*"; }
+kv()      { printf '  %-14s %s\n' "$1" "$2"; }
+
+is_enrolled() { [[ -f "${ENROLL_SENTINEL}" ]]; }
+
+meta() {
+    [[ -f "${ENROLL_META}" ]] || { echo ""; return; }
+    jq -r --arg k "$1" '.[$k] // ""' "${ENROLL_META}"
+}
+
+tailnet_state() { tailscale status --json 2>/dev/null | jq -r '.BackendState // "Unknown"'; }
+tailnet_online(){ [[ "$(tailnet_state)" == "Running" ]]; }
+tailnet_ip()    { tailscale ip -4 2>/dev/null | head -1 || true; }
+
+peer_counts() {
+    local j total online
+    j=$(tailscale status --json 2>/dev/null || echo '{}')
+    total=$(jq '[.Peer // {} | to_entries[].value] | length' <<<"${j}" 2>/dev/null || echo 0)
+    online=$(jq '[.Peer // {} | to_entries[].value | select(.Online==true)] | length' <<<"${j}" 2>/dev/null || echo 0)
+    echo "${online}/${total}"
+}
+
+cmd_status() {
+    header "◆ MONITORING SIDE ◆  Zabbix VM — Status"
+    local enr district hostname tn_ip tn_state_s peers
+    if is_enrolled; then
+        enr="$(gum style --foreground "${C_OK}" "✓ yes")  $(muted "since $(meta enrolled_at)")"
+    else
+        enr="$(gum style --foreground "${C_ERR}" "✗ no") $(muted "(run 'detel-setup')")"
+    fi
+    district=$(meta district)
+    hostname=$(meta hostname)
+    tn_ip=$(tailnet_ip)
+    if tailnet_online; then
+        tn_state_s="$(gum style --foreground "${C_OK}" "✓ online (Running)")"
+    else
+        tn_state_s="$(gum style --foreground "${C_ERR}" "✗ $(tailnet_state)")"
+    fi
+    peers=$(peer_counts)
+
+    kv "Enrolled"   "${enr}"
+    kv "District"   "${district:-<unset>}"
+    kv "Hostname"   "${hostname:-$(hostname)}"
+    kv "Tailnet IP" "${tn_ip:-<none>}"
+    kv "Tailnet"    "${tn_state_s}"
+    kv "Peers"      "${peers} (online/total)"
+
+    section "Reachable district subnets"
+    local routes
+    routes=$(tailscale status --json 2>/dev/null \
+        | jq -r '.Peer // {} | to_entries[].value
+                 | select((.PrimaryRoutes // []) | length > 0)
+                 | .HostName + "  →  " + ((.PrimaryRoutes // []) | join(","))' \
+        2>/dev/null || true)
+    if [[ -n "${routes}" ]]; then
+        printf '%s\n' "${routes}" | sed 's/^/  /'
+    else
+        muted "  (no peers advertising subnet routes yet)"
+    fi
+}
+
+cmd_logs() {
+    section "tailscaled — last 50 entries"
+    journalctl -u tailscaled -n 50 --no-pager 2>&1
+}
+
+cmd_reconfigure() {
+    warn "Reconfigure wipes local enrollment and re-runs detel-setup."
+    gum confirm "Proceed?" || exit 0
+    exec /usr/local/sbin/detel-setup
+}
+
+cmd_reset() {
+    err "Reset logs out of the tailnet and wipes local enrollment state."
+    gum confirm "Proceed?" || exit 0
+    tailscale logout 2>/dev/null || true
+    rm -f "${ENROLL_SENTINEL}" "${ENROLL_META}"
+    ok "Reset complete. Run 'detel-setup' to re-enroll."
+}
+
+cmd_menu() {
+    if ! is_enrolled; then
+        header "◆ MONITORING SIDE ◆  Detel Zabbix VM"
+        warn "Not enrolled yet."
+        gum confirm "Run detel-setup now?" || exit 0
+        exec /usr/local/sbin/detel-setup
+    fi
+
+    header "◆ MONITORING SIDE ◆  Detel Zabbix VM — $(meta district) / $(meta hostname)"
+    local choice
+    choice=$(gum choose --cursor "› " --header "What would you like to do?" \
+        "status       — current state summary" \
+        "logs         — recent tailscaled journal" \
+        "reconfigure  — re-run setup (new district/authkey)" \
+        "reset        — wipe local enrollment state" \
+        "exit")
+    case "${choice}" in
+        status*)      cmd_status ;;
+        logs*)        cmd_logs ;;
+        reconfigure*) cmd_reconfigure ;;
+        reset*)       cmd_reset ;;
+        *)            exit 0 ;;
+    esac
+}
+
+usage() {
+    cat <<EOF
+detel — admin TUI for a Zabbix VM on the Detel tailnet
+
+Usage:
+  detel [SUBCOMMAND]
+
+Subcommands:
+  status        current state summary
+  logs          recent tailscaled journal entries
+  reconfigure   wipe state + re-run detel-setup
+  reset         log out of tailnet + wipe local state
+  help          show this help
+
+With no subcommand, opens an interactive menu.
+EOF
+}
+
+case "${1:-menu}" in
+    status)                cmd_status ;;
+    logs)                  cmd_logs ;;
+    reconfigure|reconfig)  cmd_reconfigure ;;
+    reset)                 cmd_reset ;;
+    menu|'')               cmd_menu ;;
+    -h|--help|help)        usage ;;
+    *) err "unknown subcommand: $1"; usage; exit 2 ;;
+esac

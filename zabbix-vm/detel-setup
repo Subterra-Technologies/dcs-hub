@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# detel-setup: TUI to join a Zabbix VM to its district's tailnet scope.
+#
+# Flow:
+#   1. Prompt for district slug, hostname (optional), authkey
+#   2. Run `tailscale up --authkey ... --ssh --accept-routes --accept-dns=false`
+#   3. Validate that the authkey placed this node under tag:zabbix-<district>
+#   4. Persist enrollment metadata for the `detel` runtime tool
+#
+# Assumes tailscale, gum, and jq are already present (install.sh ensures this).
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+STATE_DIR=/var/lib/detel
+ENROLL_META="${STATE_DIR}/enrollment.json"
+ENROLL_SENTINEL="${STATE_DIR}/enrolled"
+
+C_BRAND=99
+C_OK=42
+C_WARN=214
+C_ERR=196
+C_MUTED=245
+C_INFO=75
+
+header()  { gum style --border double --border-foreground "${C_BRAND}" --padding "1 3" --margin "1 0" --foreground "${C_BRAND}" --bold "$@"; }
+section() { gum style --foreground "${C_BRAND}" --bold --margin "1 0 0 0" "▸ $*"; }
+ok()      { gum style --foreground "${C_OK}"    "✓ $*"; }
+warn()    { gum style --foreground "${C_WARN}"  "⚠ $*"; }
+err()     { gum style --foreground "${C_ERR}"   "✗ $*"; }
+muted()   { gum style --foreground "${C_MUTED}" "$*"; }
+
+slugify() {
+    local s="${1,,}"
+    s="${s// /-}"
+    s="${s//_/-}"
+    s="$(printf '%s' "$s" | sed -E 's/[^a-z0-9-]//g; s/-+/-/g; s/^-+|-+$//g')"
+    printf '%s' "$s"
+}
+
+for tool in tailscale gum jq; do
+    command -v "${tool}" >/dev/null 2>&1 || {
+        echo "missing dependency: ${tool} — run install.sh first" >&2
+        exit 1
+    }
+done
+
+header \
+    "◆ MONITORING SIDE ◆" \
+    "" \
+    "Detel Zabbix VM Setup" \
+    "" \
+    "Datacenter VM — reaches school LAN via the district's Pi."
+
+if [[ -f "${ENROLL_SENTINEL}" ]]; then
+    warn "This VM is already enrolled as $(jq -r '.district // "?"' "${ENROLL_META}" 2>/dev/null)."
+    gum confirm "Re-enroll? This wipes local tailscale state." || exit 0
+    tailscale logout 2>/dev/null || true
+    rm -f "${ENROLL_SENTINEL}" "${ENROLL_META}"
+    ok "Previous state cleared."
+fi
+
+section "District"
+muted "Which school district is this VM monitoring?"
+DISTRICT_RAW=$(gum input --prompt "› " --placeholder "slug, e.g. oakridge (lowercase, no spaces)")
+[[ -n "${DISTRICT_RAW}" ]] || { err "district required"; exit 1; }
+DISTRICT="$(slugify "${DISTRICT_RAW}")"
+[[ -n "${DISTRICT}" ]] || { err "district reduces to empty slug after sanitizing"; exit 1; }
+if [[ "${DISTRICT}" != "${DISTRICT_RAW}" ]]; then
+    warn "Sanitized: '${DISTRICT_RAW}' → '${DISTRICT}'"
+fi
+
+section "Hostname"
+muted "Default: zabbix-${DISTRICT}-a  (use -b, -c for additional VMs in this district)"
+HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "blank → zabbix-${DISTRICT}-a")
+HOSTNAME_NEW="${HOSTNAME_HINT:-zabbix-${DISTRICT}-a}"
+
+section "Tailscale auth key"
+muted "Mint in the Tailscale admin console with Tags = tag:zabbix-${DISTRICT}."
+muted "One-time, reusable=off, ephemeral=off."
+AUTHKEY=$(gum input --password --prompt "› ")
+[[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
+
+printf '\n'
+gum style --border normal --border-foreground "${C_MUTED}" --padding "0 2" \
+    "$(gum style --bold --foreground "${C_INFO}" 'Review')" \
+    "" \
+    "  District    ${DISTRICT}" \
+    "  Hostname    ${HOSTNAME_NEW}" \
+    "  Expected    tag:zabbix-${DISTRICT}" \
+    "  Authkey     ${AUTHKEY:0:12}… (hidden)"
+
+gum confirm "Join tailnet?" || { warn "aborted"; exit 1; }
+
+section "Joining tailnet"
+hostnamectl set-hostname "${HOSTNAME_NEW}"
+
+tailscale up \
+    --authkey "${AUTHKEY}" \
+    --hostname "${HOSTNAME_NEW}" \
+    --ssh \
+    --accept-routes \
+    --accept-dns=false \
+    --reset
+
+sleep 2
+EXPECTED_TAG="tag:zabbix-${DISTRICT}"
+ACTUAL_TAGS="$(tailscale status --json 2>/dev/null | jq -r '(.Self.Tags // []) | join(",")' 2>/dev/null || echo "")"
+
+section "Tag validation"
+if [[ -z "${ACTUAL_TAGS}" ]]; then
+    err "TAGCHECK FAIL: node has no tags"
+    muted "The authkey was not tag-scoped. Fix:"
+    muted "  1. Admin console → Machines → remove this node"
+    muted "  2. Mint a new authkey with Tags = ${EXPECTED_TAG}"
+    muted "  3. Run: sudo detel reset && sudo detel-setup"
+elif [[ ",${ACTUAL_TAGS}," = *",${EXPECTED_TAG},"* ]]; then
+    ok "TAGCHECK PASS: ${ACTUAL_TAGS}"
+else
+    err "TAGCHECK FAIL: expected ${EXPECTED_TAG}; got ${ACTUAL_TAGS}"
+    muted "The authkey was scoped to the wrong tag. Fix as above with correct tag."
+fi
+
+mkdir -p "${STATE_DIR}"
+jq -n \
+    --arg hostname    "${HOSTNAME_NEW}" \
+    --arg district    "${DISTRICT}" \
+    --arg enrolled_at "$(date -u +%FT%TZ)" \
+    '{hostname:$hostname, district:$district, role:"zabbix", enrolled_at:$enrolled_at}' \
+    > "${ENROLL_META}"
+touch "${ENROLL_SENTINEL}"
+
+gum style \
+    --border double --border-foreground "${C_OK}" \
+    --padding "1 3" --margin "1 0" \
+    --foreground "${C_OK}" --bold \
+    "✓ Setup complete" \
+    "" \
+    "This VM reaches ${DISTRICT}'s school LAN via the district's Pi." \
+    "Add Zabbix hosts by their real IPs — no translation needed." \
+    "Check state anytime with: sudo detel status"
