@@ -65,7 +65,35 @@ fi
 
 section "District"
 muted "Which school district is this VM monitoring?"
-DISTRICT_RAW=$(gum input --prompt "› " --placeholder "slug, e.g. oakridge (lowercase, no spaces)")
+
+# Prefer a picker driven by the Tailscale API (detel-districts). Falls back
+# to free-text if OAuth creds aren't set or the API call fails — the VM
+# might legitimately need to be provisioned before its Pi exists.
+DISTRICT_RAW=""
+DISCOVERY_OK=0
+DISTRICT_LIST=""
+if command -v detel-districts >/dev/null 2>&1; then
+    if DISTRICT_LIST=$(detel-districts 2>/dev/null) && [[ -n "${DISTRICT_LIST}" ]]; then
+        DISCOVERY_OK=1
+    fi
+fi
+
+if [[ ${DISCOVERY_OK} -eq 1 ]]; then
+    muted "Pi-tagged districts discovered on the tailnet:"
+    CHOICES=()
+    while IFS= read -r d; do CHOICES+=("${d}"); done <<<"${DISTRICT_LIST}"
+    CHOICES+=("(type a new slug — Pi not yet online)")
+    PICK=$(gum choose --cursor "› " --header "Pick the school district" "${CHOICES[@]}")
+    if [[ "${PICK}" == "(type a new slug — Pi not yet online)" ]]; then
+        DISTRICT_RAW=$(gum input --prompt "› " --placeholder "slug, e.g. oakridge")
+    else
+        DISTRICT_RAW="${PICK}"
+    fi
+else
+    muted "(API discovery unavailable — set OAuth creds in /etc/detel.conf to enable a picker)"
+    DISTRICT_RAW=$(gum input --prompt "› " --placeholder "slug, e.g. oakridge (lowercase, no spaces)")
+fi
+
 [[ -n "${DISTRICT_RAW}" ]] || { err "district required"; exit 1; }
 DISTRICT="$(slugify "${DISTRICT_RAW}")"
 [[ -n "${DISTRICT}" ]] || { err "district reduces to empty slug after sanitizing"; exit 1; }

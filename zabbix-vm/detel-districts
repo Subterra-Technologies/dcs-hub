@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# detel-districts: list Pi-tagged districts on the tailnet via Tailscale API.
+#
+# Usage:
+#   detel-districts           → one slug per line, sorted, deduped
+#   detel-districts --long    → slug<TAB>hostname per line
+#
+# Reads OAuth creds from /etc/detel.conf (or $DETEL_CONF):
+#   DETEL_TS_OAUTH_CLIENT_ID=...
+#   DETEL_TS_OAUTH_CLIENT_SECRET=...
+#   DETEL_TS_TAILNET=-          # "-" = the OAuth client's own tailnet
+#
+# Exit codes:
+#   0  success (even if zero matches — empty output is a valid answer)
+#   1  config missing or API failure (message on stderr)
+#
+# Scope required on the OAuth client: devices:read
+
+set -euo pipefail
+
+LONG=0
+[[ "${1:-}" == "--long" ]] && LONG=1
+
+CONF="${DETEL_CONF:-/etc/detel.conf}"
+if [[ -f "${CONF}" ]]; then
+    # shellcheck disable=SC1090
+    . "${CONF}"
+fi
+
+if [[ -z "${DETEL_TS_OAUTH_CLIENT_ID:-}" || -z "${DETEL_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+    echo "detel-districts: OAuth creds not set (expected in ${CONF})" >&2
+    exit 1
+fi
+TAILNET="${DETEL_TS_TAILNET:--}"
+
+TOKEN=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+    -d "client_id=${DETEL_TS_OAUTH_CLIENT_ID}" \
+    -d "client_secret=${DETEL_TS_OAUTH_CLIENT_SECRET}" \
+    -d "grant_type=client_credentials" 2>/dev/null \
+    | jq -r '.access_token // empty')
+
+if [[ -z "${TOKEN}" ]]; then
+    echo "detel-districts: OAuth token request failed" >&2
+    exit 1
+fi
+
+DEVICES=$(curl -sSf -H "Authorization: Bearer ${TOKEN}" \
+    "https://api.tailscale.com/api/v2/tailnet/${TAILNET}/devices" 2>/dev/null)
+
+if [[ -z "${DEVICES}" ]]; then
+    echo "detel-districts: device-list request failed" >&2
+    exit 1
+fi
+
+if [[ ${LONG} -eq 1 ]]; then
+    printf '%s\n' "${DEVICES}" | jq -r '
+        .devices[]
+        | . as $d
+        | (.tags // [])[]
+        | select(startswith("tag:pi-"))
+        | ltrimstr("tag:pi-") as $slug
+        | [$slug, $d.hostname] | @tsv' \
+        | sort -u
+else
+    printf '%s\n' "${DEVICES}" | jq -r '
+        .devices[]
+        | (.tags // [])[]
+        | select(startswith("tag:pi-"))
+        | ltrimstr("tag:pi-")' \
+        | sort -u
+fi

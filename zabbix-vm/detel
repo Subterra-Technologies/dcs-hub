@@ -97,6 +97,27 @@ cmd_logs() {
     journalctl -u tailscaled -n 50 --no-pager 2>&1
 }
 
+cmd_districts() {
+    header "◆ MONITORING SIDE ◆  Fleet — Pi districts"
+    if ! command -v detel-districts >/dev/null 2>&1; then
+        err "detel-districts helper not installed"
+        exit 1
+    fi
+    local out
+    if ! out=$(detel-districts --long 2>&1); then
+        err "${out}"
+        muted "Set DETEL_TS_OAUTH_CLIENT_ID/SECRET in /etc/detel.conf to enable."
+        exit 1
+    fi
+    if [[ -z "${out}" ]]; then
+        muted "No Pi-tagged devices found on the tailnet."
+        return
+    fi
+    printf '  %-24s  %s\n' "DISTRICT" "PI HOSTNAME"
+    printf '  %-24s  %s\n' "────────" "───────────"
+    printf '%s\n' "${out}" | awk -F'\t' '{printf "  %-24s  %s\n", $1, $2}'
+}
+
 cmd_reconfigure() {
     warn "Reconfigure wipes local enrollment and re-runs detel-setup."
     gum confirm "Proceed?" || exit 0
@@ -123,12 +144,14 @@ cmd_menu() {
     local choice
     choice=$(gum choose --cursor "› " --header "What would you like to do?" \
         "status       — current state summary" \
+        "districts    — list Pi districts on the tailnet (API)" \
         "logs         — recent tailscaled journal" \
         "reconfigure  — re-run setup (new district/authkey)" \
         "reset        — wipe local enrollment state" \
         "exit")
     case "${choice}" in
         status*)      cmd_status ;;
+        districts*)   cmd_districts ;;
         logs*)        cmd_logs ;;
         reconfigure*) cmd_reconfigure ;;
         reset*)       cmd_reset ;;
@@ -145,6 +168,7 @@ Usage:
 
 Subcommands:
   status        current state summary
+  districts     list Pi districts on the tailnet (via Tailscale API)
   logs          recent tailscaled journal entries
   reconfigure   wipe state + re-run detel-setup
   reset         log out of tailnet + wipe local state
@@ -156,6 +180,7 @@ EOF
 
 case "${1:-menu}" in
     status)                cmd_status ;;
+    districts)             cmd_districts ;;
     logs)                  cmd_logs ;;
     reconfigure|reconfig)  cmd_reconfigure ;;
     reset)                 cmd_reset ;;

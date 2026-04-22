@@ -10,6 +10,13 @@
 # Usage (on a fresh VM):
 #   git clone https://github.com/Subterra-Technologies/detel-hub /tmp/hub
 #   sudo bash /tmp/hub/zabbix-vm/install.sh
+#
+# Optional — enable API-driven district picker in the TUI:
+#   export DETEL_TS_OAUTH_CLIENT_ID=...
+#   export DETEL_TS_OAUTH_CLIENT_SECRET=...
+#   sudo -E bash /tmp/hub/zabbix-vm/install.sh
+# The installer writes these to /etc/detel.conf (chmod 0600) so detel-setup
+# can list existing Pi districts from the Tailscale API.
 
 set -euo pipefail
 
@@ -58,9 +65,22 @@ fi
 
 echo "==> [3/4] install detel tools"
 install -d -m 0755 /var/lib/detel
-for script in detel-setup detel bootstrap.sh; do
+for script in detel-setup detel detel-districts bootstrap.sh; do
     install -m 0755 "${HERE}/${script}" "/usr/local/sbin/${script}"
 done
+
+# Optional: persist OAuth creds for the district picker.
+if [[ -n "${DETEL_TS_OAUTH_CLIENT_ID:-}" && -n "${DETEL_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+    umask 077
+    cat > /etc/detel.conf <<EOF
+# Tailscale API creds for detel-districts. Scope: devices:read.
+DETEL_TS_OAUTH_CLIENT_ID=${DETEL_TS_OAUTH_CLIENT_ID}
+DETEL_TS_OAUTH_CLIENT_SECRET=${DETEL_TS_OAUTH_CLIENT_SECRET}
+DETEL_TS_TAILNET=${DETEL_TS_TAILNET:--}
+EOF
+    chmod 0600 /etc/detel.conf
+    echo "    wrote /etc/detel.conf (district picker enabled)"
+fi
 
 systemctl enable tailscaled.service >/dev/null 2>&1 || true
 
