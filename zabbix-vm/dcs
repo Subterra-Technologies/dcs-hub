@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# detel: admin TUI for a Zabbix VM on the Detel tailnet.
+# dcs: admin TUI for a Zabbix VM on the DCS tailnet.
 #
 # Usage:
-#   detel              interactive menu
-#   detel status       current state summary
-#   detel logs         recent tailscaled journal
-#   detel reconfigure  wipe state + re-run detel-setup (change district)
-#   detel reset        logout + wipe local enrollment state
-#   detel help
+#   dcs              interactive menu
+#   dcs status       current state summary
+#   dcs logs         recent tailscaled journal
+#   dcs reconfigure  wipe state + re-run dcs-setup (change district)
+#   dcs reset        logout + wipe local enrollment state
+#   dcs help
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
-STATE_DIR=/var/lib/detel
+STATE_DIR=/var/lib/dcs
 ENROLL_META="${STATE_DIR}/enrollment.json"
 ENROLL_SENTINEL="${STATE_DIR}/enrolled"
 
@@ -59,7 +59,7 @@ cmd_status() {
     if is_enrolled; then
         enr="$(gum style --foreground "${C_OK}" "✓ yes")  $(muted "since $(meta enrolled_at)")"
     else
-        enr="$(gum style --foreground "${C_ERR}" "✗ no") $(muted "(run 'detel-setup')")"
+        enr="$(gum style --foreground "${C_ERR}" "✗ no") $(muted "(run 'dcs-setup')")"
     fi
     district=$(meta district)
     hostname=$(meta hostname)
@@ -99,14 +99,14 @@ cmd_logs() {
 
 cmd_districts() {
     header "◆ MONITORING SIDE ◆  Fleet — Pi districts"
-    if ! command -v detel-districts >/dev/null 2>&1; then
-        err "detel-districts helper not installed"
+    if ! command -v dcs-districts >/dev/null 2>&1; then
+        err "dcs-districts helper not installed"
         exit 1
     fi
     local out
-    if ! out=$(detel-districts --long 2>&1); then
+    if ! out=$(dcs-districts --long 2>&1); then
         err "${out}"
-        muted "Set DETEL_TS_OAUTH_CLIENT_ID/SECRET in /etc/detel.conf to enable."
+        muted "Set DCS_TS_OAUTH_CLIENT_ID/SECRET in /etc/dcs.conf to enable."
         exit 1
     fi
     if [[ -z "${out}" ]]; then
@@ -119,9 +119,9 @@ cmd_districts() {
 }
 
 cmd_reconfigure() {
-    warn "Reconfigure wipes local enrollment and re-runs detel-setup."
+    warn "Reconfigure wipes local enrollment and re-runs dcs-setup."
     gum confirm "Proceed?" || exit 0
-    exec /usr/local/sbin/detel-setup
+    exec /usr/local/sbin/dcs-setup
 }
 
 cmd_reset() {
@@ -129,18 +129,18 @@ cmd_reset() {
     gum confirm "Proceed?" || exit 0
     tailscale logout 2>/dev/null || true
     rm -f "${ENROLL_SENTINEL}" "${ENROLL_META}"
-    ok "Reset complete. Run 'detel-setup' to re-enroll."
+    ok "Reset complete. Run 'dcs-setup' to re-enroll."
 }
 
 cmd_menu() {
     if ! is_enrolled; then
-        header "◆ MONITORING SIDE ◆  Detel Zabbix VM"
+        header "◆ MONITORING SIDE ◆  DCS Zabbix VM"
         warn "Not enrolled yet."
-        gum confirm "Run detel-setup now?" || exit 0
-        exec /usr/local/sbin/detel-setup
+        gum confirm "Run dcs-setup now?" || exit 0
+        exec /usr/local/sbin/dcs-setup
     fi
 
-    header "◆ MONITORING SIDE ◆  Detel Zabbix VM — $(meta district) / $(meta hostname)"
+    header "◆ MONITORING SIDE ◆  DCS Zabbix VM — $(meta district) / $(meta hostname)"
     local choice
     choice=$(gum choose --cursor "› " --header "What would you like to do?" \
         "status       — current state summary" \
@@ -161,16 +161,16 @@ cmd_menu() {
 
 usage() {
     cat <<EOF
-detel — admin TUI for a Zabbix VM on the Detel tailnet
+dcs — admin TUI for a Zabbix VM on the DCS tailnet
 
 Usage:
-  detel [SUBCOMMAND]
+  dcs [SUBCOMMAND]
 
 Subcommands:
   status        current state summary
   districts     list Pi districts on the tailnet (via Tailscale API)
   logs          recent tailscaled journal entries
-  reconfigure   wipe state + re-run detel-setup
+  reconfigure   wipe state + re-run dcs-setup
   reset         log out of tailnet + wipe local state
   help          show this help
 

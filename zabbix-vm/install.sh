@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# install.sh: one-shot installer for the Detel Zabbix-VM tools.
+# install.sh: one-shot installer for the DCS Zabbix-VM tools.
 #
 # What it does:
 #   1. Installs tailscale via the upstream installer (works across distros).
 #   2. Installs gum + jq (apt for Debian/Ubuntu; dnf/yum for RHEL family).
-#   3. Drops detel-setup, detel, and bootstrap.sh into /usr/local/sbin.
-#   4. Launches detel-setup so the operator completes enrollment immediately.
+#   3. Drops dcs-setup, dcs, and bootstrap.sh into /usr/local/sbin.
+#   4. Launches dcs-setup so the operator completes enrollment immediately.
 #
 # Usage (on a fresh VM):
-#   git clone https://github.com/Subterra-Technologies/detel-hub /tmp/hub
+#   git clone https://github.com/Subterra-Technologies/dcs-hub /tmp/hub
 #   sudo bash /tmp/hub/zabbix-vm/install.sh
 #
 # Optional — enable API-driven district picker in the TUI:
-#   export DETEL_TS_OAUTH_CLIENT_ID=...
-#   export DETEL_TS_OAUTH_CLIENT_SECRET=...
+#   export DCS_TS_OAUTH_CLIENT_ID=...
+#   export DCS_TS_OAUTH_CLIENT_SECRET=...
 #   sudo -E bash /tmp/hub/zabbix-vm/install.sh
-# The installer writes these to /etc/detel.conf (chmod 0600) so detel-setup
+# The installer writes these to /etc/dcs.conf (chmod 0600) so dcs-setup
 # can list existing Pi districts from the Tailscale API.
 
 set -euo pipefail
@@ -63,27 +63,30 @@ else
     exit 2
 fi
 
-echo "==> [3/4] install detel tools"
-install -d -m 0755 /var/lib/detel
-for script in detel-setup detel detel-districts bootstrap.sh; do
+echo "==> [3/4] install dcs tools"
+install -d -m 0755 /var/lib/dcs
+for script in dcs-setup dcs dcs-districts dcs-mint-key bootstrap.sh; do
     install -m 0755 "${HERE}/${script}" "/usr/local/sbin/${script}"
 done
 
 # Optional: persist OAuth creds for the district picker.
-if [[ -n "${DETEL_TS_OAUTH_CLIENT_ID:-}" && -n "${DETEL_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+if [[ -n "${DCS_TS_OAUTH_CLIENT_ID:-}" && -n "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
     umask 077
-    cat > /etc/detel.conf <<EOF
-# Tailscale API creds for detel-districts. Scope: devices:read.
-DETEL_TS_OAUTH_CLIENT_ID=${DETEL_TS_OAUTH_CLIENT_ID}
-DETEL_TS_OAUTH_CLIENT_SECRET=${DETEL_TS_OAUTH_CLIENT_SECRET}
-DETEL_TS_TAILNET=${DETEL_TS_TAILNET:--}
+    cat > /etc/dcs.conf <<EOF
+# Tailscale API creds. Scopes needed:
+#   devices:read     — for dcs-districts (picker)
+#   auth_keys:write  — for dcs-mint-key (auto-mint at enrollment time)
+# Both scopes can live on one OAuth client.
+DCS_TS_OAUTH_CLIENT_ID=${DCS_TS_OAUTH_CLIENT_ID}
+DCS_TS_OAUTH_CLIENT_SECRET=${DCS_TS_OAUTH_CLIENT_SECRET}
+DCS_TS_TAILNET=${DCS_TS_TAILNET:--}
 EOF
-    chmod 0600 /etc/detel.conf
-    echo "    wrote /etc/detel.conf (district picker enabled)"
+    chmod 0600 /etc/dcs.conf
+    echo "    wrote /etc/dcs.conf (district picker enabled)"
 fi
 
 systemctl enable tailscaled.service >/dev/null 2>&1 || true
 
-echo "==> [4/4] launching detel-setup"
+echo "==> [4/4] launching dcs-setup"
 echo
-exec /usr/local/sbin/detel-setup
+exec /usr/local/sbin/dcs-setup

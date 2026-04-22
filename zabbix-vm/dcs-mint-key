@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# dcs-mint-key: mint a tag-scoped one-hour pre-auth key via Tailscale API.
+#
+# Usage:
+#   dcs-mint-key TAG       # e.g. dcs-mint-key zabbix-oakridge
+#                          # "tag:" prefix is added if missing
+#
+# Prints the minted authkey (tskey-auth-...) to stdout on success.
+# Exits 0 on success, 1 on any failure.
+#
+# Reads OAuth creds from /etc/dcs.conf (or $DCS_CONF):
+#   DCS_TS_OAUTH_CLIENT_ID=...
+#   DCS_TS_OAUTH_CLIENT_SECRET=...
+#   DCS_TS_TAILNET=-            # "-" = the OAuth client's own tailnet
+#
+# Required OAuth scope: auth_keys:write
+#   (The same OAuth client can also hold devices:read for dcs-districts.)
+
+set -euo pipefail
+
+TAG="${1:?usage: dcs-mint-key TAG}"
+TAG="${TAG#tag:}"
+FULL_TAG="tag:${TAG}"
+
+CONF="${DCS_CONF:-/etc/dcs.conf}"
+if [[ -f "${CONF}" ]]; then
+    # shellcheck disable=SC1090
+    . "${CONF}"
+fi
+
+if [[ -z "${DCS_TS_OAUTH_CLIENT_ID:-}" || -z "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+    echo "dcs-mint-key: OAuth creds not set (expected in ${CONF})" >&2
+    exit 1
+fi
+TAILNET="${DCS_TS_TAILNET:--}"
+
+TOKEN=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+    -d "client_id=${DCS_TS_OAUTH_CLIENT_ID}" \
+    -d "client_secret=${DCS_TS_OAUTH_CLIENT_SECRET}" \
+    -d "grant_type=client_credentials" 2>/dev/null \
+    | jq -r '.access_token // empty')
+
+if [[ -z "${TOKEN}" ]]; then
+    echo "dcs-mint-key: OAuth token request failed" >&2
+    exit 1
+fi
+
+BODY=$(jq -n \
+    --arg tag  "${FULL_TAG}" \
+    --arg desc "dcs-setup auto-mint for ${FULL_TAG}" \
+    '{
+      capabilities: {
+        devices: {
+          create: {
+            reusable: false,
+            ephemeral: false,
+            preauthorized: true,
+            tags: [$tag]
+          }
+        }
+      },
+      expirySeconds: 3600,
+      description: $desc
+    }')
+
+RESPONSE=$(curl -sSf -X POST \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "${BODY}" \
+    "https://api.tailscale.com/api/v2/tailnet/${TAILNET}/keys" 2>/dev/null)
+
+KEY=$(printf '%s\n' "${RESPONSE}" | jq -r '.key // empty')
+
+if [[ -z "${KEY}" ]]; then
+    echo "dcs-mint-key: API rejected request (check auth_keys:write scope and tag owners)" >&2
+    exit 1
+fi
+
+printf '%s\n' "${KEY}"

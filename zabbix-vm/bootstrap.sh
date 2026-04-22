@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap a Zabbix VM onto the Detel tailnet (Tailscale SaaS).
+# Bootstrap a Zabbix VM onto the DCS tailnet (Tailscale SaaS).
 #
 # Prereqs:
 #   - Linux VM, outbound HTTPS/UDP to the internet.

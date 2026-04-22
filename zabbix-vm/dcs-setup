@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# detel-setup: TUI to join a Zabbix VM to its district's tailnet scope.
+# dcs-setup: TUI to join a Zabbix VM to its district's tailnet scope.
 #
 # Flow:
 #   1. Prompt for district slug, hostname (optional), authkey
 #   2. Run `tailscale up --authkey ... --ssh --accept-routes --accept-dns=false`
 #   3. Validate that the authkey placed this node under tag:zabbix-<district>
-#   4. Persist enrollment metadata for the `detel` runtime tool
+#   4. Persist enrollment metadata for the `dcs` runtime tool
 #
 # Assumes tailscale, gum, and jq are already present (install.sh ensures this).
 
@@ -15,7 +15,7 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
-STATE_DIR=/var/lib/detel
+STATE_DIR=/var/lib/dcs
 ENROLL_META="${STATE_DIR}/enrollment.json"
 ENROLL_SENTINEL="${STATE_DIR}/enrolled"
 
@@ -51,7 +51,7 @@ done
 header \
     "◆ MONITORING SIDE ◆" \
     "" \
-    "Detel Zabbix VM Setup" \
+    "DCS Zabbix VM Setup" \
     "" \
     "Datacenter VM — reaches school LAN via the district's Pi."
 
@@ -66,14 +66,14 @@ fi
 section "District"
 muted "Which school district is this VM monitoring?"
 
-# Prefer a picker driven by the Tailscale API (detel-districts). Falls back
+# Prefer a picker driven by the Tailscale API (dcs-districts). Falls back
 # to free-text if OAuth creds aren't set or the API call fails — the VM
 # might legitimately need to be provisioned before its Pi exists.
 DISTRICT_RAW=""
 DISCOVERY_OK=0
 DISTRICT_LIST=""
-if command -v detel-districts >/dev/null 2>&1; then
-    if DISTRICT_LIST=$(detel-districts 2>/dev/null) && [[ -n "${DISTRICT_LIST}" ]]; then
+if command -v dcs-districts >/dev/null 2>&1; then
+    if DISTRICT_LIST=$(dcs-districts 2>/dev/null) && [[ -n "${DISTRICT_LIST}" ]]; then
         DISCOVERY_OK=1
     fi
 fi
@@ -90,7 +90,7 @@ if [[ ${DISCOVERY_OK} -eq 1 ]]; then
         DISTRICT_RAW="${PICK}"
     fi
 else
-    muted "(API discovery unavailable — set OAuth creds in /etc/detel.conf to enable a picker)"
+    muted "(API discovery unavailable — set OAuth creds in /etc/dcs.conf to enable a picker)"
     DISTRICT_RAW=$(gum input --prompt "› " --placeholder "slug, e.g. oakridge (lowercase, no spaces)")
 fi
 
@@ -107,10 +107,27 @@ HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "blank → zabbix-${DIST
 HOSTNAME_NEW="${HOSTNAME_HINT:-zabbix-${DISTRICT}-a}"
 
 section "Tailscale auth key"
-muted "Mint in the Tailscale admin console with Tags = tag:zabbix-${DISTRICT}."
-muted "One-time, reusable=off, ephemeral=off."
-AUTHKEY=$(gum input --password --prompt "› ")
-[[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
+
+# Prefer API-driven auto-mint (OAuth scope: auth_keys:write). If that's not
+# available, fall back to a manual paste of an admin-console-minted key.
+AUTHKEY=""
+AUTHKEY_SOURCE="manual"
+if command -v dcs-mint-key >/dev/null 2>&1; then
+    muted "Attempting to auto-mint a one-hour pre-auth key…"
+    if AUTHKEY=$(dcs-mint-key "zabbix-${DISTRICT}" 2>/dev/null) && [[ -n "${AUTHKEY}" ]]; then
+        AUTHKEY_SOURCE="auto"
+        ok "Auto-minted key for tag:zabbix-${DISTRICT} (1-hour expiry, one-time)"
+    else
+        AUTHKEY=""
+        warn "Auto-mint unavailable — falling back to paste."
+    fi
+fi
+if [[ -z "${AUTHKEY}" ]]; then
+    muted "Mint in the Tailscale admin console with Tags = tag:zabbix-${DISTRICT}."
+    muted "One-time, reusable=off, ephemeral=off."
+    AUTHKEY=$(gum input --password --prompt "› ")
+    [[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
+fi
 
 printf '\n'
 gum style --border normal --border-foreground "${C_MUTED}" --padding "0 2" \
@@ -119,7 +136,7 @@ gum style --border normal --border-foreground "${C_MUTED}" --padding "0 2" \
     "  District    ${DISTRICT}" \
     "  Hostname    ${HOSTNAME_NEW}" \
     "  Expected    tag:zabbix-${DISTRICT}" \
-    "  Authkey     ${AUTHKEY:0:12}… (hidden)"
+    "  Authkey     ${AUTHKEY:0:12}… (${AUTHKEY_SOURCE})"
 
 gum confirm "Join tailnet?" || { warn "aborted"; exit 1; }
 
@@ -144,7 +161,7 @@ if [[ -z "${ACTUAL_TAGS}" ]]; then
     muted "The authkey was not tag-scoped. Fix:"
     muted "  1. Admin console → Machines → remove this node"
     muted "  2. Mint a new authkey with Tags = ${EXPECTED_TAG}"
-    muted "  3. Run: sudo detel reset && sudo detel-setup"
+    muted "  3. Run: sudo dcs reset && sudo dcs-setup"
 elif [[ ",${ACTUAL_TAGS}," = *",${EXPECTED_TAG},"* ]]; then
     ok "TAGCHECK PASS: ${ACTUAL_TAGS}"
 else
@@ -169,4 +186,4 @@ gum style \
     "" \
     "This VM reaches ${DISTRICT}'s school LAN via the district's Pi." \
     "Add Zabbix hosts by their real IPs — no translation needed." \
-    "Check state anytime with: sudo detel status"
+    "Check state anytime with: sudo dcs status"
