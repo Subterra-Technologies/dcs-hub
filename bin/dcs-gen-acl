@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# dcs-gen-acl: generate Tailscale ACL JSON from districts.yaml.
+#
+# Usage:
+#   bin/dcs-gen-acl [districts.yaml] > policy.json
+#   DCS_ACL_OWNER=someone@example.com bin/dcs-gen-acl > policy.json
+#
+# The output is a Tailscale policy document suitable for pasting into
+# the admin console → Access Controls.
+#
+# Schema produced:
+#   tagOwners:
+#     tag:ops                 → <owner>
+#     tag:provisioner         → <owner>              # OAuth-client identity
+#     tag:pi-<slug>           → [tag:provisioner]    # one per district
+#     tag:zabbix-<slug>       → [tag:provisioner]    # one per district
+#   acls:
+#     tag:ops → every tagged node                     # blanket admin
+#     tag:zabbix-<slug> → tag:pi-<slug>               # per-district pair
+#   ssh:
+#     tag:ops → tag:pi-*, tag:zabbix-*, users=[dcs]   # Tailscale SSH
+#   autoApprovers.routes:
+#     RFC1918 → tag:pi-*                              # auto-approve LAN routes
+#
+# Dependencies: yq (v4+), jq.
+
+set -euo pipefail
+
+YAML="${1:-${DCS_DISTRICTS_YAML:-districts.yaml}}"
+[[ -f "${YAML}" ]] || { echo "dcs-gen-acl: ${YAML} not found" >&2; exit 1; }
+
+for tool in yq jq; do
+    command -v "${tool}" >/dev/null 2>&1 \
+        || { echo "dcs-gen-acl: missing dependency '${tool}' (apt install ${tool})" >&2; exit 1; }
+done
+
+# Resolve owner: env var wins, else .owner in the YAML.
+OWNER="${DCS_ACL_OWNER:-}"
+[[ -n "${OWNER}" ]] || OWNER="$(yq -r '.owner // ""' "${YAML}")"
+if [[ -z "${OWNER}" || "${OWNER}" == "null" ]]; then
+    echo "dcs-gen-acl: set '.owner' in ${YAML} or export DCS_ACL_OWNER=you@example.com" >&2
+    exit 1
+fi
+
+# District slugs (keys under .districts)
+mapfile -t SLUGS < <(yq -r '.districts // {} | keys | .[]' "${YAML}")
+
+# Base tagOwners
+tag_owners=$(jq -n --arg owner "${OWNER}" '{
+    "tag:ops":         [$owner],
+    "tag:provisioner": [$owner]
+}')
+for slug in "${SLUGS[@]}"; do
+    tag_owners=$(jq \
+        --arg slug "${slug}" \
+        '. + {("tag:pi-"+$slug):     ["tag:provisioner"],
+              ("tag:zabbix-"+$slug): ["tag:provisioner"]}' \
+        <<<"${tag_owners}")
+done
+
+# acls
+acls=$(jq -n '[{
+    "action": "accept",
+    "src":    ["tag:ops"],
+    "dst":    ["tag:pi-*:*", "tag:zabbix-*:*"]
+}]')
+for slug in "${SLUGS[@]}"; do
+    acls=$(jq \
+        --arg slug "${slug}" \
+        '. + [{
+            "action": "accept",
+            "src":    ["tag:zabbix-"+$slug],
+            "dst":    ["tag:pi-"+$slug+":*"]
+        }]' \
+        <<<"${acls}")
+done
+
+# ssh
+ssh_rules=$(jq -n '[{
+    "action": "check",
+    "src":    ["tag:ops"],
+    "dst":    ["tag:pi-*", "tag:zabbix-*"],
+    "users":  ["dcs"]
+}]')
+
+# autoApprovers (RFC1918 routes → any tag:pi-* node)
+auto_approvers=$(jq -n '{
+    "routes": {
+        "10.0.0.0/8":     ["tag:pi-*"],
+        "172.16.0.0/12":  ["tag:pi-*"],
+        "192.168.0.0/16": ["tag:pi-*"]
+    }
+}')
+
+jq -n \
+    --argjson tagOwners     "${tag_owners}" \
+    --argjson acls          "${acls}" \
+    --argjson ssh           "${ssh_rules}" \
+    --argjson autoApprovers "${auto_approvers}" \
+    '{
+      "tagOwners":     $tagOwners,
+      "acls":          $acls,
+      "ssh":           $ssh,
+      "autoApprovers": $autoApprovers
+    }'

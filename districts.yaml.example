@@ -1,0 +1,33 @@
+# DCS fleet district list — source of truth for ACL generation, CIDR
+# defaults in the provisioning TUIs, and fleet documentation.
+#
+# HOW TO USE:
+#   1. cp districts.yaml.example districts.yaml
+#   2. Fill in your districts below.
+#   3. Generate ACL JSON:  bin/dcs-gen-acl > policy.json
+#   4. Paste policy.json into Tailscale admin → Access Controls.
+#
+# districts.yaml itself is gitignored (district names + CIDRs are mildly
+# sensitive operational info). Keep the real file local or in a private
+# repo; share via your team password manager / 1Password vault / etc.
+
+# Tailscale user identity that owns the ACL tags. This is the email of
+# the Tailscale-admin user whose identity is tied to `tag:provisioner`
+# (the synthetic tag the auto-mint OAuth client tags new nodes with).
+# Override at runtime with: DCS_ACL_OWNER=... bin/dcs-gen-acl
+owner: noah@subterratechnologies.com
+
+districts:
+  # Dev/test district — Noah's home Pi 5.
+  noahs-house:
+    cidrs: ["10.0.0.0/16"]
+    description: "Dev/test lab"
+
+  # Example production districts. Replace with your own.
+  # oakridge:
+  #   cidrs: ["10.42.0.0/24"]
+  #   description: "Oak Ridge School District — main campus + HS annex"
+  #
+  # westville:
+  #   cidrs: ["10.50.0.0/22"]
+  #   description: "Westville Consolidated — 4 elementary + 1 HS"

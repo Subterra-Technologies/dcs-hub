@@ -102,9 +102,27 @@ if [[ "${DISTRICT}" != "${DISTRICT_RAW}" ]]; then
 fi
 
 section "Hostname"
-muted "Default: zabbix-${DISTRICT}-a  (use -b, -c for additional VMs in this district)"
-HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "blank → zabbix-${DISTRICT}-a")
-HOSTNAME_NEW="${HOSTNAME_HINT:-zabbix-${DISTRICT}-a}"
+
+# Suggest the next letter by looking at existing zabbix-<slug>-<letter>
+# hostnames on the tailnet. Default "a" if the API isn't reachable or
+# no prior VMs exist in this district.
+suggest_next_letter() {
+    local tag="tag:zabbix-${DISTRICT}" letters last next
+    command -v dcs-query >/dev/null 2>&1 || { echo a; return; }
+    letters=$(dcs-query hostnames "${tag}" 2>/dev/null \
+        | sed -nE "s/^zabbix-${DISTRICT}-([a-z])$/\1/p" \
+        | sort -u)
+    if [[ -z "${letters}" ]]; then echo a; return; fi
+    last=$(printf '%s\n' "${letters}" | tail -1)
+    next=$(printf '%s' "${last}" | tr 'a-y' 'b-z')
+    [[ "${next}" == "${last}" ]] && next=z  # ran out — best-effort
+    echo "${next}"
+}
+SUGGESTED_LETTER=$(suggest_next_letter)
+DEFAULT_HOSTNAME="zabbix-${DISTRICT}-${SUGGESTED_LETTER}"
+muted "Default: ${DEFAULT_HOSTNAME}  (suggested based on existing VMs in this district)"
+HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "blank → ${DEFAULT_HOSTNAME}")
+HOSTNAME_NEW="${HOSTNAME_HINT:-${DEFAULT_HOSTNAME}}"
 
 section "Tailscale auth key"
 

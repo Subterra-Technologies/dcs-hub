@@ -1,6 +1,8 @@
 /var/
 /local/
 /work/
+/districts.yaml
+/policy.json
 *.log
 *.key
 *.pem

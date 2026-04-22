@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# dcs-query: query the Tailscale API for fleet facts.
+#
+# Subcommands:
+#   dcs-query cidrs <slug>       CIDRs advertised by pi-<slug> device(s)
+#   dcs-query hostnames <tag>    hostnames of devices carrying <tag>
+#                                (tag: prefix optional)
+#
+# Reads OAuth creds from /etc/dcs.conf (or $DCS_CONF). Scope: devices:read.
+#
+# Exit codes:
+#   0  success (may print nothing if no matches)
+#   1  config / network / parse error (stderr explains)
+#   2  usage error
+
+set -euo pipefail
+
+usage() {
+    cat >&2 <<EOF
+usage: dcs-query cidrs <slug>
+       dcs-query hostnames <tag>
+EOF
+    exit 2
+}
+
+SUB="${1:-}"; ARG="${2:-}"
+[[ -n "${SUB}" && -n "${ARG}" ]] || usage
+
+CONF="${DCS_CONF:-/etc/dcs.conf}"
+[[ -f "${CONF}" ]] || { echo "dcs-query: ${CONF} not found" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "${CONF}"
+if [[ -z "${DCS_TS_OAUTH_CLIENT_ID:-}" || -z "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+    echo "dcs-query: OAuth creds missing in ${CONF}" >&2
+    exit 1
+fi
+TAILNET="${DCS_TS_TAILNET:--}"
+
+TOKEN=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+    -d "client_id=${DCS_TS_OAUTH_CLIENT_ID}" \
+    -d "client_secret=${DCS_TS_OAUTH_CLIENT_SECRET}" \
+    -d "grant_type=client_credentials" 2>/dev/null \
+    | jq -r '.access_token // empty')
+[[ -n "${TOKEN}" ]] || { echo "dcs-query: OAuth token request failed" >&2; exit 1; }
+
+# ?fields=all so advertisedRoutes is populated.
+DEVICES=$(curl -sSf -H "Authorization: Bearer ${TOKEN}" \
+    "https://api.tailscale.com/api/v2/tailnet/${TAILNET}/devices?fields=all" 2>/dev/null)
+[[ -n "${DEVICES}" ]] || { echo "dcs-query: device-list request failed" >&2; exit 1; }
+
+case "${SUB}" in
+    cidrs)
+        slug="${ARG#tag:pi-}"   # tolerate "tag:pi-X" or bare "X"
+        tag="tag:pi-${slug}"
+        printf '%s\n' "${DEVICES}" | jq -r --arg tag "${tag}" '
+            .devices[]
+            | select((.tags // []) | any(. == $tag))
+            | (.advertisedRoutes // [])[]
+        ' | sort -u
+        ;;
+    hostnames)
+        tag="${ARG#tag:}"
+        full="tag:${tag}"
+        printf '%s\n' "${DEVICES}" | jq -r --arg tag "${full}" '
+            .devices[]
+            | select((.tags // []) | any(. == $tag))
+            | .hostname
+        ' | sort -u
+        ;;
+    *) usage ;;
+esac

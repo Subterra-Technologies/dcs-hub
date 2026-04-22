@@ -48,15 +48,35 @@ sudo dcs reset        # logout + wipe local state
 
 The TUI still works without OAuth creds — it just falls back to asking the operator to type the district slug and paste a hand-minted pre-auth key. OAuth makes it dead-simple; it isn't a hard dependency.
 
+## Managing the tailnet ACL — single source of truth
+
+As the fleet grows past a handful of districts, hand-editing the Tailscale ACL policy stops scaling. Instead, maintain a list of districts in `districts.yaml` and generate the ACL mechanically:
+
+```bash
+cp districts.yaml.example districts.yaml
+# edit districts.yaml — add each district's slug + CIDRs
+bin/dcs-gen-acl > policy.json
+# paste policy.json into Tailscale admin → Access Controls
+```
+
+The generator produces a coherent policy in one shot: `tagOwners` entries for every `tag:pi-<slug>` and `tag:zabbix-<slug>` (owned by `tag:provisioner` so the OAuth client can mint them), per-district `acls` rules wiring `zabbix-<slug>` → `pi-<slug>`, a blanket `tag:ops` admin rule, `ssh` rules that allow `tag:ops` → all nodes as user `dcs`, and `autoApprovers` for RFC1918 routes on any Pi.
+
+`districts.yaml` is **gitignored** — district names and CIDRs are mildly sensitive operational data. Keep the real file local or in a private vault.
+
+Dependencies for the generator: `yq` (v3+, apt has it) and `jq`.
+
 ## Repo layout
 
 | Path | Purpose |
 |---|---|
+| `districts.yaml.example`   | Template for the district source-of-truth file. |
+| `bin/dcs-gen-acl`          | Generates Tailscale ACL JSON from `districts.yaml`. |
 | `zabbix-vm/install.sh`     | Idempotent VM installer — run once per VM. |
-| `zabbix-vm/dcs-setup`      | First-time enrollment TUI. |
+| `zabbix-vm/dcs-setup`      | First-time enrollment TUI (auto-suggests next hostname letter). |
 | `zabbix-vm/dcs`            | Day-2 admin CLI/TUI. |
 | `zabbix-vm/dcs-districts`  | Lists Pi-tagged districts via the Tailscale API. |
 | `zabbix-vm/dcs-mint-key`   | Mints a one-hour tag-scoped pre-auth key via the API. |
+| `zabbix-vm/dcs-query`      | General-purpose Tailscale-API queries (CIDRs, hostnames). |
 | `zabbix-vm/bootstrap.sh`   | Headless (flag-based) enrollment — for CI / scripted deploys. |
 
 ## Headless path (CI)
