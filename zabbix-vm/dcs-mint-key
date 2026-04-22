@@ -13,8 +13,8 @@
 #   DCS_TS_OAUTH_CLIENT_SECRET=...
 #   DCS_TS_TAILNET=-            # "-" = the OAuth client's own tailnet
 #
-# Required OAuth scope: auth_keys:write
-#   (The same OAuth client can also hold devices:read for dcs-districts.)
+# Required OAuth scope: auth_keys (Write), with target tags selected on
+# the client. (Same client can also hold devices:core Read for dcs-districts.)
 
 set -euo pipefail
 
@@ -34,20 +34,34 @@ if [[ -z "${DCS_TS_OAUTH_CLIENT_ID:-}" || -z "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]
 fi
 TAILNET="${DCS_TS_TAILNET:--}"
 
-TOKEN=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+# Mint an OAuth access token. We intentionally don't use `curl -f` — on
+# HTTP errors we still want the response body (Tailscale returns JSON with
+# a useful message) so we can show it to the operator.
+TOKEN_RESPONSE=$(curl -sS -X POST https://api.tailscale.com/api/v2/oauth/token \
     -d "client_id=${DCS_TS_OAUTH_CLIENT_ID}" \
     -d "client_secret=${DCS_TS_OAUTH_CLIENT_SECRET}" \
-    -d "grant_type=client_credentials" 2>/dev/null \
-    | jq -r '.access_token // empty')
+    -d "grant_type=client_credentials" \
+    -w '\n%{http_code}' 2>&1 || true)
+TOKEN_HTTP=${TOKEN_RESPONSE##*$'\n'}
+TOKEN_BODY=${TOKEN_RESPONSE%$'\n'*}
+TOKEN=$(printf '%s' "${TOKEN_BODY}" | jq -r '.access_token // empty' 2>/dev/null || true)
 
 if [[ -z "${TOKEN}" ]]; then
-    echo "dcs-mint-key: OAuth token request failed" >&2
+    echo "dcs-mint-key: OAuth token request failed (HTTP ${TOKEN_HTTP:-?})" >&2
+    TOKEN_MSG=$(printf '%s' "${TOKEN_BODY}" | jq -r '.error_description // .error // empty' 2>/dev/null || true)
+    if [[ -n "${TOKEN_MSG}" ]]; then
+        echo "  ${TOKEN_MSG}" >&2
+    elif [[ -n "${TOKEN_BODY}" ]]; then
+        printf '  %s\n' "${TOKEN_BODY}" >&2
+    fi
     exit 1
 fi
 
+# Description can't contain ':' — Tailscale validates it as a DNS-ish label.
+# Use the bare TAG (e.g. "zabbix-oakridge") instead of FULL_TAG.
 BODY=$(jq -n \
     --arg tag  "${FULL_TAG}" \
-    --arg desc "dcs-setup auto-mint for ${FULL_TAG}" \
+    --arg desc "dcs-setup auto-mint ${TAG}" \
     '{
       capabilities: {
         devices: {
@@ -63,16 +77,36 @@ BODY=$(jq -n \
       description: $desc
     }')
 
-RESPONSE=$(curl -sSf -X POST \
+RESPONSE=$(curl -sS -X POST \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
     -d "${BODY}" \
-    "https://api.tailscale.com/api/v2/tailnet/${TAILNET}/keys" 2>/dev/null)
+    -w '\n%{http_code}' \
+    "https://api.tailscale.com/api/v2/tailnet/${TAILNET}/keys" 2>&1 || true)
+HTTP=${RESPONSE##*$'\n'}
+RESPONSE_BODY=${RESPONSE%$'\n'*}
 
-KEY=$(printf '%s\n' "${RESPONSE}" | jq -r '.key // empty')
+if [[ "${HTTP}" != "200" ]]; then
+    echo "dcs-mint-key: mint request failed (HTTP ${HTTP:-?}) for ${FULL_TAG}" >&2
+    API_MSG=$(printf '%s' "${RESPONSE_BODY}" | jq -r '.message // empty' 2>/dev/null || true)
+    if [[ -n "${API_MSG}" ]]; then
+        echo "  ${API_MSG}" >&2
+    elif [[ -n "${RESPONSE_BODY}" ]]; then
+        printf '  %s\n' "${RESPONSE_BODY}" >&2
+    fi
+    echo >&2
+    echo "Check that the OAuth client at" >&2
+    echo "  https://login.tailscale.com/admin/settings/trust-credentials" >&2
+    echo "has the auth_keys scope with Write, and that ${FULL_TAG} is in the" >&2
+    echo "tag list picked on that client (even 'all' scope requires per-tag" >&2
+    echo "selection for auth_keys)." >&2
+    exit 1
+fi
 
+KEY=$(printf '%s' "${RESPONSE_BODY}" | jq -r '.key // empty' 2>/dev/null || true)
 if [[ -z "${KEY}" ]]; then
-    echo "dcs-mint-key: API rejected request (check auth_keys:write scope and tag owners)" >&2
+    echo "dcs-mint-key: API returned HTTP 200 but no .key field:" >&2
+    printf '  %s\n' "${RESPONSE_BODY}" >&2
     exit 1
 fi
 

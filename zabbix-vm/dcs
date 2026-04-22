@@ -7,6 +7,7 @@
 #   dcs logs         recent tailscaled journal
 #   dcs reconfigure  wipe state + re-run dcs-setup (change district)
 #   dcs reset        logout + wipe local enrollment state
+#   dcs update       pull latest dcs tools from the repo
 #   dcs help
 
 set -euo pipefail
@@ -71,12 +72,15 @@ cmd_status() {
     fi
     peers=$(peer_counts)
 
+    local version
+    version=$(cat "${STATE_DIR}/installed-sha" 2>/dev/null || echo "")
     kv "Enrolled"   "${enr}"
     kv "District"   "${district:-<unset>}"
     kv "Hostname"   "${hostname:-$(hostname)}"
     kv "Tailnet IP" "${tn_ip:-<none>}"
     kv "Tailnet"    "${tn_state_s}"
     kv "Peers"      "${peers} (online/total)"
+    kv "Version"    "${version:0:7}${version:+  (dcs update to refresh)}"
 
     section "Reachable district subnets"
     local routes
@@ -116,6 +120,88 @@ cmd_districts() {
     printf '  %-24s  %s\n' "DISTRICT" "PI HOSTNAME"
     printf '  %-24s  %s\n' "────────" "───────────"
     printf '%s\n' "${out}" | awk -F'\t' '{printf "  %-24s  %s\n", $1, $2}'
+}
+
+cmd_update() {
+    local repo_url="${DCS_REPO_URL:-https://github.com/Subterra-Technologies/dcs-hub}"
+    local repo_ref="${DCS_REPO_REF:-main}"
+
+    header "◆ MONITORING SIDE ◆  Zabbix VM — Update" \
+        "" \
+        "Pulls the latest dcs tools from ${repo_ref}." \
+        "Does NOT re-run enrollment or touch /etc/dcs.conf."
+
+    if ! command -v git >/dev/null 2>&1; then
+        muted "installing git (required to fetch updates)…"
+        if command -v apt-get >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q git
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y -q git
+        else
+            err "no supported package manager found — install git manually"
+            return 1
+        fi
+    fi
+
+    local stage
+    stage=$(mktemp -d -t dcs-update.XXXXXX)
+    # shellcheck disable=SC2064
+    trap "rm -rf '${stage}'" RETURN
+
+    section "Fetching"
+    muted "repo: ${repo_url}  ref: ${repo_ref}"
+    if ! git clone --quiet --depth 50 --branch "${repo_ref}" \
+            "${repo_url}" "${stage}/repo" 2>/dev/null
+    then
+        err "clone failed — check network connectivity and repo URL"
+        return 1
+    fi
+
+    local new_sha cur_sha
+    new_sha=$(git -C "${stage}/repo" rev-parse HEAD)
+    cur_sha=$(cat "${STATE_DIR}/installed-sha" 2>/dev/null || echo "")
+
+    section "Versions"
+    kv "Installed" "${cur_sha:-unknown}"
+    kv "Latest"    "${new_sha}"
+
+    if [[ "${cur_sha}" == "${new_sha}" ]]; then
+        ok "already at the latest version"
+        return 0
+    fi
+
+    if [[ -n "${cur_sha}" ]] \
+        && git -C "${stage}/repo" cat-file -e "${cur_sha}^{commit}" 2>/dev/null
+    then
+        section "Changes since installed version"
+        git -C "${stage}/repo" log --oneline --no-merges \
+            "${cur_sha}..${new_sha}" | head -20
+    fi
+
+    printf '\n'
+    gum confirm "Apply update?" || { warn "aborted"; return 0; }
+
+    section "Installing"
+    local installed=0 f name
+    for f in "${stage}/repo/zabbix-vm/"*; do
+        [[ -f "${f}" ]] || continue
+        name=$(basename "${f}")
+        case "${name}" in .*|*~|*.swp|*.md|*.example) continue ;; esac
+        install -m 0755 "${f}" "/usr/local/sbin/${name}"
+        installed=$((installed + 1))
+    done
+    ok "${installed} files installed to /usr/local/sbin"
+
+    mkdir -p "${STATE_DIR}"
+    echo "${new_sha}" > "${STATE_DIR}/installed-sha"
+
+    printf '\n'
+    gum style --border double --border-foreground "${C_OK}" \
+        --padding "1 3" --foreground "${C_OK}" --bold \
+        "✓ Updated ${cur_sha:0:7} → ${new_sha:0:7}"
 }
 
 cmd_reconfigure() {
@@ -187,6 +273,7 @@ cmd_menu() {
         "status       — current state summary" \
         "districts    — list Pi districts on the tailnet (API)" \
         "logs         — recent tailscaled journal" \
+        "update       — pull latest dcs tools from the repo" \
         "reconfigure  — re-run setup (new district/authkey)" \
         "reset        — wipe local enrollment state" \
         "exit")
@@ -194,6 +281,7 @@ cmd_menu() {
         status*)      cmd_status ;;
         districts*)   cmd_districts ;;
         logs*)        cmd_logs ;;
+        update*)      cmd_update ;;
         reconfigure*) cmd_reconfigure ;;
         reset*)       cmd_reset ;;
         *)            exit 0 ;;
@@ -211,6 +299,8 @@ Subcommands:
   status        current state summary
   districts     list Pi districts on the tailnet (via Tailscale API)
   logs          recent tailscaled journal entries
+  update        pull the newest dcs tools from the repo
+                (DCS_REPO_REF=<branch|tag|sha> to pin a version)
   reconfigure   wipe state + re-run dcs-setup
   reset         log out of tailnet + wipe local state
                 (refuses over Tailscale SSH; use 'reset --force' to override)
@@ -224,6 +314,7 @@ case "${1:-menu}" in
     status)                cmd_status ;;
     districts)             cmd_districts ;;
     logs)                  cmd_logs ;;
+    update)                cmd_update ;;
     reconfigure|reconfig)  cmd_reconfigure ;;
     reset)                 shift; cmd_reset "$@" ;;
     menu|'')               cmd_menu ;;

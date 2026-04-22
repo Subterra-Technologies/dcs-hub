@@ -18,6 +18,7 @@ fi
 STATE_DIR=/var/lib/dcs
 ENROLL_META="${STATE_DIR}/enrollment.json"
 ENROLL_SENTINEL="${STATE_DIR}/enrolled"
+DCS_CONF="${DCS_CONF:-/etc/dcs.conf}"
 
 C_BRAND=99
 C_OK=42
@@ -41,6 +42,119 @@ slugify() {
     printf '%s' "$s"
 }
 
+# Round-trip the OAuth client_credentials flow to confirm the creds in env
+# are valid. Returns 0 if Tailscale returns an access_token.
+test_oauth_creds() {
+    local token
+    token=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+        -d "client_id=${DCS_TS_OAUTH_CLIENT_ID:-}" \
+        -d "client_secret=${DCS_TS_OAUTH_CLIENT_SECRET:-}" \
+        -d "grant_type=client_credentials" 2>/dev/null \
+        | jq -r '.access_token // empty' || true)
+    [[ -n "${token}" ]]
+}
+
+# Ensure ${DCS_CONF} has working OAuth client creds. Walks the operator
+# through entry if missing or invalid, then persists. Validates against
+# Tailscale's token endpoint before writing so typos are caught immediately.
+ensure_oauth_creds() {
+    if [[ -f "${DCS_CONF}" ]]; then
+        # shellcheck disable=SC1090
+        . "${DCS_CONF}"
+    fi
+    if [[ -n "${DCS_TS_OAUTH_CLIENT_ID:-}" && -n "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+        if test_oauth_creds; then
+            return 0
+        fi
+        warn "OAuth creds in ${DCS_CONF} are invalid — let's re-enter them."
+    fi
+
+    section "Tailscale OAuth client (one-time)"
+    muted "Mint at: https://login.tailscale.com/admin/settings/trust-credentials"
+    muted "Scopes: devices:core (Read) + auth_keys (Write, with zabbix-* tags)"
+    muted "Client secret starts with 'tskey-client-' (not 'tskey-auth-')."
+    muted "Stored in ${DCS_CONF} (0600) so future VMs on this image skip this step."
+
+    while true; do
+        DCS_TS_OAUTH_CLIENT_ID=$(gum input --prompt "client id › " \
+            --placeholder "short string, no tskey- prefix")
+        if [[ -z "${DCS_TS_OAUTH_CLIENT_ID}" ]]; then
+            err "client id required"
+            continue
+        fi
+        DCS_TS_OAUTH_CLIENT_SECRET=$(gum input --password --prompt "client secret › ")
+        if [[ -z "${DCS_TS_OAUTH_CLIENT_SECRET}" ]]; then
+            err "client secret required"
+            continue
+        fi
+        if test_oauth_creds; then
+            ok "OAuth creds validated"
+            umask 077
+            cat > "${DCS_CONF}" <<EOF
+# Tailscale API creds. Scopes: devices:core:read, auth_keys (zabbix-* tags).
+DCS_TS_OAUTH_CLIENT_ID=${DCS_TS_OAUTH_CLIENT_ID}
+DCS_TS_OAUTH_CLIENT_SECRET=${DCS_TS_OAUTH_CLIENT_SECRET}
+DCS_TS_TAILNET=${DCS_TS_TAILNET:--}
+EOF
+            chmod 0600 "${DCS_CONF}"
+            export DCS_TS_OAUTH_CLIENT_ID DCS_TS_OAUTH_CLIENT_SECRET
+            return 0
+        fi
+        err "Tailscale rejected those creds. Check the OAuth client, try again."
+    done
+}
+
+# Read-only check that the tailnet ACL is ready for a Zabbix VM in this
+# district. Verifies tag:zabbix-<district> is declared in tagOwners. Prints
+# a paste-ready snippet on mismatch and exits. We never write the ACL —
+# round-tripping through jq would strip comments from the policy file.
+precheck_acl() {
+    local district="$1"
+    local tag="tag:zabbix-${district}"
+    local tailnet="${DCS_TS_TAILNET:--}"
+
+    section "ACL precheck"
+
+    local token
+    token=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+        -d "client_id=${DCS_TS_OAUTH_CLIENT_ID:-}" \
+        -d "client_secret=${DCS_TS_OAUTH_CLIENT_SECRET:-}" \
+        -d "grant_type=client_credentials" 2>/dev/null \
+        | jq -r '.access_token // empty' || true)
+    if [[ -z "${token}" ]]; then
+        warn "Couldn't mint an API token — skipping ACL precheck."
+        return 0
+    fi
+
+    local acl http
+    acl=$(curl -sS -w '\n%{http_code}' \
+        -H "Authorization: Bearer ${token}" \
+        -H "Accept: application/json" \
+        "https://api.tailscale.com/api/v2/tailnet/${tailnet}/acl" 2>/dev/null || true)
+    http="${acl##*$'\n'}"
+    acl="${acl%$'\n'*}"
+    if [[ "${http}" != "200" ]]; then
+        warn "ACL read failed (HTTP ${http:-?}) — OAuth client likely lacks policy_file scope."
+        muted "Skipping precheck. If auto-mint fails, check tagOwners manually."
+        return 0
+    fi
+
+    if printf '%s' "${acl}" | jq -e --arg tag "${tag}" '.tagOwners[$tag]' >/dev/null 2>&1; then
+        ok "ACL already declares ${tag}"
+        return 0
+    fi
+
+    err "ACL is missing ${tag} in tagOwners — fix before enrollment:"
+    muted "Edit at https://login.tailscale.com/admin/acls/file"
+    printf '\n'
+    gum style --border normal --border-foreground "${C_INFO}" --padding "0 2" \
+        "Add under \"tagOwners\":" \
+        "  \"${tag}\": [\"autogroup:admin\"],"
+    printf '\n'
+    warn "Save the ACL, then re-run: sudo dcs-setup"
+    exit 1
+}
+
 for tool in tailscale gum jq; do
     command -v "${tool}" >/dev/null 2>&1 || {
         echo "missing dependency: ${tool} — run install.sh first" >&2
@@ -61,6 +175,13 @@ if [[ -f "${ENROLL_SENTINEL}" ]]; then
     tailscale logout 2>/dev/null || true
     rm -f "${ENROLL_SENTINEL}" "${ENROLL_META}"
     ok "Previous state cleared."
+fi
+
+# Collect OAuth client creds up-front so the district picker, hostname
+# suggestion, and auto-mint all work. Skippable via DCS_AUTHKEY for
+# air-gapped / manual-paste workflows.
+if [[ -z "${DCS_AUTHKEY:-}" ]]; then
+    ensure_oauth_creds
 fi
 
 section "District"
@@ -107,9 +228,13 @@ section "Hostname"
 # hostnames on the tailnet. Default "a" if the API isn't reachable or
 # no prior VMs exist in this district.
 suggest_next_letter() {
-    local tag="tag:zabbix-${DISTRICT}" letters last next
+    local tag="tag:zabbix-${DISTRICT}" hostnames letters last next
     command -v dcs-query >/dev/null 2>&1 || { echo a; return; }
-    letters=$(dcs-query hostnames "${tag}" 2>/dev/null \
+    # `|| true` so a dcs-query failure (no /etc/dcs.conf, bad OAuth, offline)
+    # falls through to the default instead of killing the script under
+    # `set -e` + `pipefail`.
+    hostnames=$(dcs-query hostnames "${tag}" 2>/dev/null || true)
+    letters=$(printf '%s\n' "${hostnames}" \
         | sed -nE "s/^zabbix-${DISTRICT}-([a-z])$/\1/p" \
         | sort -u)
     if [[ -z "${letters}" ]]; then echo a; return; fi
@@ -124,27 +249,41 @@ muted "Default: ${DEFAULT_HOSTNAME}  (suggested based on existing VMs in this di
 HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "blank → ${DEFAULT_HOSTNAME}")
 HOSTNAME_NEW="${HOSTNAME_HINT:-${DEFAULT_HOSTNAME}}"
 
-section "Tailscale auth key"
+# Fail fast if the tailnet ACL isn't ready. Skippable via DCS_AUTHKEY
+# (operator supplying their own key knows what they're doing).
+if [[ -z "${DCS_AUTHKEY:-}" ]]; then
+    precheck_acl "${DISTRICT}"
+fi
 
-# Prefer API-driven auto-mint (OAuth scope: auth_keys:write). If that's not
-# available, fall back to a manual paste of an admin-console-minted key.
+section "Auth key"
 AUTHKEY=""
 AUTHKEY_SOURCE="manual"
-if command -v dcs-mint-key >/dev/null 2>&1; then
-    muted "Attempting to auto-mint a one-hour pre-auth key…"
-    if AUTHKEY=$(dcs-mint-key "zabbix-${DISTRICT}" 2>/dev/null) && [[ -n "${AUTHKEY}" ]]; then
+if [[ -n "${DCS_AUTHKEY:-}" ]]; then
+    AUTHKEY="${DCS_AUTHKEY}"
+    AUTHKEY_SOURCE="env"
+    muted "using auth key from \$DCS_AUTHKEY"
+else
+    muted "Minting a one-hour tag-scoped key for tag:zabbix-${DISTRICT}…"
+    MINT_RC=0
+    MINT_OUT=$(dcs-mint-key "zabbix-${DISTRICT}" 2>&1) || MINT_RC=$?
+    if [[ "${MINT_RC}" -eq 0 && "${MINT_OUT}" == tskey-auth-* ]]; then
+        AUTHKEY="${MINT_OUT}"
         AUTHKEY_SOURCE="auto"
-        ok "Auto-minted key for tag:zabbix-${DISTRICT} (1-hour expiry, one-time)"
+        ok "auth key minted"
     else
-        AUTHKEY=""
-        warn "Auto-mint unavailable — falling back to paste."
+        err "auto-mint failed:"
+        printf '  %s\n' "${MINT_OUT}"
+        muted "Common causes:"
+        muted "  • tag:zabbix-${DISTRICT} not declared in ACL tagOwners"
+        muted "  • OAuth client missing the auth_keys (Write) scope for this tag"
+        if gum confirm "Paste a pre-minted auth key instead?"; then
+            AUTHKEY=$(gum input --password --prompt "› ")
+            [[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
+        else
+            err "aborted"
+            exit 1
+        fi
     fi
-fi
-if [[ -z "${AUTHKEY}" ]]; then
-    muted "Mint in the Tailscale admin console with Tags = tag:zabbix-${DISTRICT}."
-    muted "One-time, reusable=off, ephemeral=off."
-    AUTHKEY=$(gum input --password --prompt "› ")
-    [[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
 fi
 
 printf '\n'
