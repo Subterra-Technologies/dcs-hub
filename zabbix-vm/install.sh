@@ -91,7 +91,10 @@ if git -C "${HERE}/.." rev-parse HEAD >/dev/null 2>&1; then
     git -C "${HERE}/.." rev-parse HEAD > /var/lib/dcs/installed-sha
 fi
 
-systemctl enable tailscaled.service >/dev/null 2>&1 || true
+# --now so the daemon is running for dcs-setup's `tailscale up` call, not
+# just enabled for next boot. Without this, fresh installs fail with
+# "failed to connect to local tailscaled" on the first setup attempt.
+systemctl enable --now tailscaled.service >/dev/null 2>&1 || true
 
 echo "==> [4/4] launching dcs-setup"
 echo
