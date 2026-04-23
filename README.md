@@ -13,40 +13,53 @@ Each Zabbix VM monitors one school district. This repo holds the scripts that jo
 
 ## Quick start — new Zabbix VM
 
-**One-time, per tailnet.** In the Tailscale admin console → Settings → OAuth clients → **Generate**. Grant two scopes:
-- `devices:read` — for the live district picker.
-- `auth_keys:write` — so the TUI can auto-mint pre-auth keys.
+**One-time, per tailnet.** In the Tailscale admin console → [Trust credentials](https://login.tailscale.com/admin/settings/trust-credentials) → OAuth clients → **Generate**. Grant two scopes:
+- `devices:core` with **Read** — for the live district picker.
+- `auth_keys` with **Write** — so the TUI can auto-mint pre-auth keys. **Select every `tag:zabbix-*` you'll provision** in the tag picker (per-tag selection is required even if you grant the broader `all` scope).
 
-Save the client ID and secret in your password manager.
+The client secret starts with `tskey-client-` (not `tskey-auth-`). Save it in your password manager.
 
 **On every new VM** (Debian/Ubuntu or RHEL-family Linux, outbound internet):
 
 ```bash
 git clone https://github.com/Subterra-Technologies/dcs-hub /tmp/hub
+sudo bash /tmp/hub/zabbix-vm/install.sh
+```
+
+The installer pulls `tailscale`, `gum`, `jq`, and `git`, drops the `dcs*` binaries into `/usr/local/sbin`, records the source SHA to `/var/lib/dcs/installed-sha`, and launches the setup TUI.
+
+**TUI prompts** (first VM on this image only for OAuth):
+- **OAuth client** — client ID + secret from the Trust credentials page. Validated live against the Tailscale token endpoint before being persisted to `/etc/dcs.conf`. Subsequent VMs on the same image skip this step.
+- **District** — pick from the live Pi-tagged list or type a new slug.
+- **Hostname** — default is the next free letter (`zabbix-<slug>-a`, `-b`, …).
+- **ACL precheck** — the TUI reads the tailnet ACL and verifies `tag:zabbix-<district>` is in `tagOwners`. If missing, it prints a paste-ready snippet and exits rather than silently failing at the mint step.
+- **Auth key** — minted automatically for `tag:zabbix-<district>`. No paste unless auto-mint fails (in which case you get Tailscale's actual error message + a manual-paste fallback).
+
+**Pre-bake OAuth creds** (skip the TUI OAuth prompt on the first VM):
+```bash
 export DCS_TS_OAUTH_CLIENT_ID=<client-id>
 export DCS_TS_OAUTH_CLIENT_SECRET=<client-secret>
 sudo -E bash /tmp/hub/zabbix-vm/install.sh
 ```
-
-The installer pulls `tailscale`, `gum`, and `jq`, drops the `dcs*` binaries into `/usr/local/sbin`, persists the OAuth creds to `/etc/dcs.conf` (chmod 0600), and launches the setup TUI.
-
-Two prompts: **pick the district** from the live list, **confirm the hostname** (default is `zabbix-<slug>-a`). The TUI auto-mints a one-hour tag-scoped pre-auth key, runs `tailscale up`, validates the tag, and persists enrollment metadata. Done.
 
 ## Day 2
 
 On any enrolled VM:
 
 ```bash
-sudo dcs status       # enrollment + tailnet state
+sudo dcs status       # enrollment + tailnet state + installed version
 sudo dcs districts    # list live Pi districts from the API
 sudo dcs logs         # recent tailscaled journal
+sudo dcs update       # pull latest dcs tools from the repo
 sudo dcs reconfigure  # re-run setup (swap district)
 sudo dcs reset        # logout + wipe local state
 ```
 
+`sudo dcs update` fetches the latest scripts from `main` (override with `DCS_REPO_REF=<branch|tag|sha>`), shows a changelog from your installed SHA, and reinstalls atomically. Preserves `/etc/dcs.conf` and enrollment state.
+
 ## Without OAuth
 
-The TUI still works without OAuth creds — it just falls back to asking the operator to type the district slug and paste a hand-minted pre-auth key. OAuth makes it dead-simple; it isn't a hard dependency.
+The TUI works without OAuth if you set `DCS_AUTHKEY=tskey-auth-…` — it skips both the OAuth prompt and the mint step and uses your key directly. Useful for air-gapped or scripted deploys where reaching the Tailscale API isn't possible.
 
 ## Managing the tailnet ACL — single source of truth
 
