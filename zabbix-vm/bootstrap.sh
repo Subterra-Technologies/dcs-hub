@@ -44,6 +44,12 @@ fi
 echo "[2/3] setting hostname (if requested)"
 if [[ -n "${HOSTNAME_NEW}" ]]; then
     hostnamectl set-hostname "${HOSTNAME_NEW}"
+    # Keep /etc/hosts in sync so sudo doesn't warn on every invocation.
+    if grep -qE '^127\.0\.1\.1\b' /etc/hosts; then
+        sed -i -E "s|^127\.0\.1\.1.*|127.0.1.1\t${HOSTNAME_NEW}|" /etc/hosts
+    else
+        printf '127.0.1.1\t%s\n' "${HOSTNAME_NEW}" >> /etc/hosts
+    fi
 fi
 
 echo "[3/3] joining tailnet"
