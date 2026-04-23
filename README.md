@@ -22,6 +22,10 @@ The client secret starts with `tskey-client-` (not `tskey-auth-`). Save it in yo
 **On every new VM** (Debian/Ubuntu or RHEL-family Linux, outbound internet):
 
 ```bash
+# install git if it's not already there — minimal cloud images often don't have it
+command -v git >/dev/null || sudo apt update && sudo apt install -y git \
+  || sudo dnf install -y git || sudo yum install -y git
+
 git clone https://github.com/Subterra-Technologies/dcs-hub /tmp/hub
 sudo bash /tmp/hub/zabbix-vm/install.sh
 ```
