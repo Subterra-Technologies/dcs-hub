@@ -46,6 +46,36 @@ export DCS_TS_OAUTH_CLIENT_SECRET=<client-secret>
 sudo -E bash /tmp/hub/zabbix-vm/install.sh
 ```
 
+## VM network requirements
+
+Tailscale needs unfettered egress to its coordination plane and DERP relays. Most cloud providers and home networks already allow this; **office networks with DPI-aware firewalls (Palo Alto, Fortinet, Sophos, etc.) often classify Tailscale as a VPN/anonymizer and silently drop or throttle it**, which manifests as ~50% packet loss to the district Pi with `tailscale status` cheerfully reporting `direct`.
+
+Before enrolling a VM, the network in front of it must allow:
+
+- **UDP/3478** outbound to public IPs (STUN — Tailscale + Google).
+- **UDP** outbound to high ephemeral ports (Tailscale uses random source/dest for direct paths).
+- **TCP/443** outbound to `*.tailscale.com` **without TLS/SSL inspection**. DERP servers pin their certs and reject MITM.
+- The firewall must **not** classify `tailscale.com` SNIs under "VPN", "anonymizer", or "proxy avoidance" categories.
+
+Full reference: https://tailscale.com/kb/1082/firewall-ports.
+
+### Quick check from a fresh VM
+
+```bash
+tailscale netcheck
+```
+
+A healthy result has `UDP: true` and a populated `Nearest DERP` with sub-100ms latency. If you see `UDP: false` or `Nearest DERP: unknown — no response to latency probes`, the egress is the problem — not the VM, not Tailscale.
+
+To distinguish a hard block from SNI-based DPI, compare hostname-SNI vs raw-IP curl:
+
+```bash
+curl -sS --max-time 5 -o /dev/null -w "%{http_code}\n"    https://derp.tailscale.com/        # SNI = tailscale.com
+curl -sS --max-time 5 -o /dev/null -w "%{http_code}\n" -k https://159.89.225.99:443/         # SNI = raw IP
+```
+
+Hostname times out + raw IP connects → SNI-based blocking. Both fail → IP-layer block. Both succeed → connectivity is fine and the issue is elsewhere.
+
 ## Day 2
 
 On any enrolled VM:
