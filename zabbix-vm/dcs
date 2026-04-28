@@ -56,7 +56,7 @@ peer_counts() {
 }
 
 cmd_status() {
-    header "◆ MONITORING SIDE ◆  Zabbix VM — Status"
+    header "◆ HUB SIDE ◆  Zabbix VM — Status"
     local enr district hostname tn_ip tn_state_s peers
     if is_enrolled; then
         enr="$(gum style --foreground "${C_OK}" "✓ yes")  $(muted "since $(meta enrolled_at)")"
@@ -103,7 +103,7 @@ cmd_logs() {
 }
 
 cmd_districts() {
-    header "◆ MONITORING SIDE ◆  Fleet — Pi districts"
+    header "◆ HUB SIDE ◆  Fleet — Pi districts"
     if ! command -v dcs-districts >/dev/null 2>&1; then
         err "dcs-districts helper not installed"
         exit 1
@@ -127,7 +127,7 @@ cmd_update() {
     local repo_url="${DCS_REPO_URL:-https://github.com/Subterra-Technologies/dcs-hub}"
     local repo_ref="${DCS_REPO_REF:-main}"
 
-    header "◆ MONITORING SIDE ◆  Zabbix VM — Update" \
+    header "◆ HUB SIDE ◆  Zabbix VM — Update" \
         "" \
         "Pulls the latest dcs tools from ${repo_ref}." \
         "Does NOT re-run enrollment or touch /etc/dcs.conf."
@@ -270,13 +270,13 @@ cmd_reset() {
 
 cmd_menu() {
     if ! is_enrolled; then
-        header "◆ MONITORING SIDE ◆  DCS Zabbix VM"
+        header "◆ HUB SIDE ◆  DCS Zabbix VM"
         warn "Not enrolled yet."
         gum confirm "Run dcs-setup now?" || exit 0
         exec /usr/local/sbin/dcs-setup
     fi
 
-    header "◆ MONITORING SIDE ◆  DCS Zabbix VM — $(meta district) / $(meta hostname)"
+    header "◆ HUB SIDE ◆  DCS Zabbix VM — $(meta district) / $(meta hostname)"
     local choice
     choice=$(gum choose --cursor "› " --header "What would you like to do?" \
         "status       — current state summary" \

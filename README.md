@@ -1,17 +1,22 @@
 # dcs-hub
 
-Datacenter-side tools for the DCS fleet: the Zabbix-VM installer, setup TUI, and admin CLI.
+Hub-side tooling for tailnet-connected VMs that need to reach one or more remote networks via a DCS gateway (a Raspberry Pi running [`dcs-pi-image`](https://github.com/Subterra-Technologies/dcs-pi-image), or any other Tailscale subnet router we control).
 
-Companion repo: [`dcs-pi-image`](https://github.com/Subterra-Technologies/dcs-pi-image) (the school-side appliance).
-Full ops docs live in that repo at [`docs/OPS_RUNBOOK.md`](https://github.com/Subterra-Technologies/dcs-pi-image/blob/main/docs/OPS_RUNBOOK.md).
+Despite the name, **the hub VM doesn't have to be a Zabbix server**. It's a generic recipe for "a Linux VM, on the tailnet, scoped to a remote network or several." Common deployments today:
 
----
+- **Zabbix monitoring server** that polls switches/APs/UPSs at school district sites (the original use case).
+- **Jump host** for sysadmin access into customer networks without per-customer VPN setup.
+- **Internal tools VM** (Grafana, internal dashboards, log collectors) that needs reach into client/partner LANs.
+- **CI/build runner** that has to deploy into customer networks.
+- **Network bridge** between two private networks where neither end can host an inbound listener.
 
-## What this is
+The repo holds the installer, setup TUI, ACL generator, and admin CLI. No public IPs, no port forwarding, no per-VM manual config.
 
-Each Zabbix VM monitors one school district. This repo holds the scripts that join a fresh VM to the tailnet, scope it to the correct district, and wire it up so it can reach the district's Pi subnet router. No public IPs, no port forwarding, no per-VM manual config.
+Full ops docs live in the companion repo: [`dcs-pi-image/docs/OPS_RUNBOOK.md`](https://github.com/Subterra-Technologies/dcs-pi-image/blob/main/docs/OPS_RUNBOOK.md).
 
-## Quick start — new Zabbix VM
+> Naming note: the on-disk directory is still `zabbix-vm/` and tag scheme is `tag:zabbix-<scope>` / `tag:pi-<scope>` for backward compatibility with the existing fleet. Treat "zabbix" in those names as a synonym for "hub" — the scripts don't install or assume Zabbix. A future major version will rename to `hub/` + `tag:hub-<scope>`; until then we're keeping the names stable.
+
+## Quick start — new hub VM
 
 **One-time, per tailnet.** In the Tailscale admin console → [Trust credentials](https://login.tailscale.com/admin/settings/trust-credentials) → OAuth clients → **Generate**. Grant two scopes:
 - `devices:core` with **Read** — for the live district picker.
@@ -34,10 +39,10 @@ The installer pulls `tailscale`, `gum`, `jq`, and `git`, drops the `dcs*` binari
 
 **TUI prompts** (first VM on this image only for OAuth):
 - **OAuth client** — client ID + secret from the Trust credentials page. Validated live against the Tailscale token endpoint before being persisted to `/etc/dcs.conf`. Subsequent VMs on the same image skip this step.
-- **District** — pick from the live Pi-tagged list or type a new slug.
-- **Hostname** — default is the next free letter (`zabbix-<slug>-a`, `-b`, …).
-- **ACL precheck** — the TUI reads the tailnet ACL and verifies `tag:zabbix-<district>` is in `tagOwners`. If missing, it prints a paste-ready snippet and exits rather than silently failing at the mint step.
-- **Auth key** — minted automatically for `tag:zabbix-<district>`. No paste unless auto-mint fails (in which case you get Tailscale's actual error message + a manual-paste fallback).
+- **Scope** (the TUI calls this "district" for legacy reasons) — pick from the live gateway-tagged list or type a new slug. A scope is a name for the remote network this hub will reach: a school district, customer site, vendor partner, internal lab, etc.
+- **Hostname** — default is the next free letter (`zabbix-<slug>-a`, `-b`, …). The `zabbix-` prefix is legacy; you can override with any name.
+- **ACL precheck** — the TUI reads the tailnet ACL and verifies `tag:zabbix-<scope>` is in `tagOwners`. If missing, it prints a paste-ready snippet and exits rather than silently failing at the mint step.
+- **Auth key** — minted automatically for `tag:zabbix-<scope>`. No paste unless auto-mint fails (in which case you get Tailscale's actual error message + a manual-paste fallback).
 
 **Pre-bake OAuth creds** (skip the TUI OAuth prompt on the first VM):
 ```bash
@@ -45,6 +50,34 @@ export DCS_TS_OAUTH_CLIENT_ID=<client-id>
 export DCS_TS_OAUTH_CLIENT_SECRET=<client-secret>
 sudo -E bash /tmp/hub/zabbix-vm/install.sh
 ```
+
+## Common use cases
+
+The hub VM is a generic tailnet-connected Linux box. After enrollment, install whatever your use case needs. Examples we've shipped or planned:
+
+| Use case | What runs on the hub | What runs at the gateway |
+|---|---|---|
+| **Network monitoring** | Zabbix server, Grafana, OpenNMS | Zabbix proxy *(optional)* on the Pi, or just routed access to the LAN |
+| **Sysadmin jump host** | SSH server, fail2ban, audit logging | Nothing — Pi is just a router |
+| **Internal tools / dashboards** | Grafana, Metabase, internal web apps | Pi routes from app to backend services on the customer LAN |
+| **CI/build runner with internal access** | GitHub Actions runner, GitLab runner, self-hosted CI | Pi routes builds to artifact stores or staging on customer LAN |
+| **Network bridge** | Nothing user-installed; Tailscale acts as the bridge | Pi advertises customer subnet, hub VM accepts route |
+| **Software deployment** | Ansible, Salt, Chef control node | Pi gives access to managed nodes on the customer LAN |
+| **Backup target** | Restic, BorgBackup, Rsync server | Pi routes nightly backups from customer LAN |
+
+The infrastructure pieces (`dcs-setup`, ACL generator, Tailscale enrollment) are the same regardless of use case. The application stack is your choice.
+
+## Multi-network — one hub, many remote networks
+
+A hub VM can reach **as many remote networks as you have gateways for** — there is no one-VM-per-network limit at the infrastructure layer. Tailscale accepts every approved subnet route from every peer, so once a hub is on the tailnet it can talk to every gateway you've enrolled (subject to ACL rules).
+
+Two ways to do this:
+
+**Pattern A — one hub per scope (default).** Each `dcs-setup` run creates a hub tagged `tag:zabbix-<scope>` that's ACL-restricted to talk to only `tag:pi-<scope>`. Good when you want hard isolation per customer/district. The TUI suggests this.
+
+**Pattern B — one shared hub for many scopes.** Add the hub to multiple tags (`tag:zabbix-acadia`, `tag:zabbix-customerB`, `tag:zabbix-internal`) by editing the tailnet ACL after enrollment, and grant cross-scope reach in `acls`. One VM accesses all the networks. Good for small fleets or internal ops tools.
+
+To extend an existing hub with another scope's reach (Pattern B), edit `districts.yaml` to add the new scope, regenerate the ACL with `bin/dcs-gen-acl`, and add the hub to the new tag in the tailnet admin. No reinstall needed; routes show up on the next ACL push.
 
 ## VM network requirements
 

@@ -163,7 +163,7 @@ for tool in tailscale gum jq; do
 done
 
 header \
-    "◆ MONITORING SIDE ◆" \
+    "◆ HUB SIDE ◆" \
     "" \
     "DCS Zabbix VM Setup" \
     "" \

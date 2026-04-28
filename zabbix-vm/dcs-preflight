@@ -48,7 +48,7 @@ FAILS=0
 note_warn() { WARNS=$((WARNS + 1)); warn "$@"; }
 note_fail() { FAILS=$((FAILS + 1)); err  "$@"; }
 
-header "◆ MONITORING SIDE ◆  Zabbix VM — Network preflight"
+header "◆ HUB SIDE ◆  Zabbix VM — Network preflight"
 
 # ---------------------------------------------------------------------------
 section "1. Basic IP egress"
