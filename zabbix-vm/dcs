@@ -5,6 +5,7 @@
 #   dcs              interactive menu
 #   dcs status       current state summary
 #   dcs logs         recent tailscaled journal
+#   dcs preflight    verify this VM's egress permits Tailscale
 #   dcs reconfigure  wipe state + re-run dcs-setup (change district)
 #   dcs reset        logout + wipe local enrollment state
 #   dcs update       pull latest dcs tools from the repo
@@ -210,6 +211,14 @@ cmd_reconfigure() {
     exec /usr/local/sbin/dcs-setup
 }
 
+cmd_preflight() {
+    if [[ ! -x /usr/local/sbin/dcs-preflight ]]; then
+        err "/usr/local/sbin/dcs-preflight not found — run 'sudo dcs update' first"
+        exit 1
+    fi
+    exec /usr/local/sbin/dcs-preflight "$@"
+}
+
 caller_ssh_connection() {
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
         printf '%s' "${SSH_CONNECTION}"
@@ -273,6 +282,7 @@ cmd_menu() {
         "status       — current state summary" \
         "districts    — list Pi districts on the tailnet (API)" \
         "logs         — recent tailscaled journal" \
+        "preflight    — verify this VM's egress permits Tailscale" \
         "update       — pull latest dcs tools from the repo" \
         "reconfigure  — re-run setup (new district/authkey)" \
         "reset        — wipe local enrollment state" \
@@ -281,6 +291,7 @@ cmd_menu() {
         status*)      cmd_status ;;
         districts*)   cmd_districts ;;
         logs*)        cmd_logs ;;
+        preflight*)   cmd_preflight ;;
         update*)      cmd_update ;;
         reconfigure*) cmd_reconfigure ;;
         reset*)       cmd_reset ;;
@@ -299,6 +310,8 @@ Subcommands:
   status        current state summary
   districts     list Pi districts on the tailnet (via Tailscale API)
   logs          recent tailscaled journal entries
+  preflight     verify this VM's egress permits Tailscale
+                (--quiet for a single PASS/WARN/FAIL line, useful in CI)
   update        pull the newest dcs tools from the repo
                 (DCS_REPO_REF=<branch|tag|sha> to pin a version)
   reconfigure   wipe state + re-run dcs-setup
@@ -314,6 +327,7 @@ case "${1:-menu}" in
     status)                cmd_status ;;
     districts)             cmd_districts ;;
     logs)                  cmd_logs ;;
+    preflight)             shift; cmd_preflight "$@" ;;
     update)                cmd_update ;;
     reconfigure|reconfig)  cmd_reconfigure ;;
     reset)                 shift; cmd_reset "$@" ;;

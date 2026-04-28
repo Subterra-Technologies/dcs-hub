@@ -65,7 +65,7 @@ fi
 
 echo "==> [3/4] install dcs tools"
 install -d -m 0755 /var/lib/dcs
-for script in dcs-setup dcs dcs-districts dcs-mint-key dcs-query bootstrap.sh; do
+for script in dcs-setup dcs dcs-districts dcs-mint-key dcs-query dcs-preflight bootstrap.sh; do
     install -m 0755 "${HERE}/${script}" "/usr/local/sbin/${script}"
 done
 

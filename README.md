@@ -84,10 +84,13 @@ On any enrolled VM:
 sudo dcs status       # enrollment + tailnet state + installed version
 sudo dcs districts    # list live Pi districts from the API
 sudo dcs logs         # recent tailscaled journal
+sudo dcs preflight    # verify this VM's egress permits Tailscale
 sudo dcs update       # pull latest dcs tools from the repo
 sudo dcs reconfigure  # re-run setup (swap district)
 sudo dcs reset        # logout + wipe local state
 ```
+
+`dcs preflight` is what you run when ping to a district Pi flaps despite `tailscale status` saying everything's fine — it runs the real UDP/STUN probes Tailscale uses, distinguishes SNI-based DPI from hard IP blocks, and exits non-zero with a specific failure pointing at the firewall rule that needs to change. Hand the [`HOST_NETWORK_REQUIREMENTS.md`](docs/HOST_NETWORK_REQUIREMENTS.md) doc to whoever administers the VM's egress (corporate IT, hosting provider, MSP) for the per-vendor firewall guidance.
 
 `sudo dcs update` fetches the latest scripts from `main` (override with `DCS_REPO_REF=<branch|tag|sha>`), shows a changelog from your installed SHA, and reinstalls atomically. Preserves `/etc/dcs.conf` and enrollment state.
 
